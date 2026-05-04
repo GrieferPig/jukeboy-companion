@@ -2,26 +2,9 @@ use std::io;
 
 use thiserror::Error;
 
+#[cfg(not(target_os = "android"))]
 fn format_btleplug_error(error: &btleplug::Error) -> String {
     let message = error.to_string();
-
-    #[cfg(target_os = "android")]
-    {
-        if matches!(error, btleplug::Error::PermissionDenied) {
-            return "Android Bluetooth permission is missing or still pending. Allow Nearby devices/Bluetooth for this app and try again.".into();
-        }
-
-        let mut source: &(dyn std::error::Error + 'static) = error;
-        while let Some(next) = source.source() {
-            if next
-                .to_string()
-                .contains("Current thread is not attached to the Java VM")
-            {
-                return "Android BLE failed because the current Rust thread is not attached to the Android JVM.".into();
-            }
-            source = next;
-        }
-    }
 
     format!("BTLE plug error: {message}")
 }
@@ -38,6 +21,8 @@ pub enum CompanionError {
     Protocol(String),
     #[error("{0}")]
     Btleplug(String),
+    #[error("Android BLE bridge error: {0}")]
+    AndroidBleBridge(String),
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
     #[error("JSON error: {0}")]
@@ -73,10 +58,9 @@ pub enum CompanionError {
     },
     #[error("application data path is unavailable")]
     AppDataPathUnavailable,
-    #[error("Android btleplug initialization failed: {0}")]
-    AndroidBtleplugInit(String),
 }
 
+#[cfg(not(target_os = "android"))]
 impl From<btleplug::Error> for CompanionError {
     fn from(error: btleplug::Error) -> Self {
         Self::Btleplug(format_btleplug_error(&error))

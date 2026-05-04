@@ -1,6 +1,4 @@
-# btleplug Java classes are loaded via JNI and must survive release shrinking.
--keep class com.nonpolynomial.** { *; }
--keep class io.github.gedgygedgy.** { *; }# Add project specific ProGuard rules here.
+# Add project specific ProGuard rules here.
 # You can control the set of applied configuration files using the
 # proguardFiles setting in build.gradle.
 #

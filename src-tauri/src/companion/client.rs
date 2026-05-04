@@ -8,8 +8,8 @@ use std::{
 };
 
 #[cfg(target_os = "android")]
-use std::sync::OnceLock;
-
+use crate::companion::android_ble::{self, AndroidBleConnection};
+#[cfg(not(target_os = "android"))]
 use btleplug::{
     api::{
         Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, ValueNotification,
@@ -17,13 +17,17 @@ use btleplug::{
     },
     platform::{Adapter, Manager, Peripheral},
 };
+#[cfg(not(target_os = "android"))]
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::{
     sync::{broadcast, oneshot, Mutex},
     task::JoinHandle,
-    time::{sleep, timeout},
+    time::timeout,
 };
+
+#[cfg(not(target_os = "android"))]
+use tokio::time::sleep;
 
 use crate::companion::{
     error::{CompanionError, Result},
@@ -31,13 +35,16 @@ use crate::companion::{
         build_auth_proof, decode_album, decode_auth_challenge, decode_auth_status,
         decode_capabilities, decode_frame, decode_frame_bytes, decode_hello,
         decode_history_album_page, decode_pair_status, decode_snapshot, decode_track_page,
-        decode_trusted_list, decode_wifi_scan_results, encode_request_frame, notify_uuid,
-        opcode_name, read_u16, service_uuid, tlv_bytes, tlv_first, tlv_string, tlv_u32, tlv_u8,
-        tlv_value_string, tlv_value_u16, write_uuid, BtAction, ConnectedDevice, DiscoveredDevice,
-        Frame, FrameType, LastfmAction, Opcode, PlaybackAction, TlvType, DEFAULT_CHUNK_SIZE,
-        DEFAULT_DEVICE_NAME, FRAME_HEADER_LEN, FRAME_MAX_LEN, MAGIC, VERSION,
+        decode_trusted_list, decode_wifi_scan_results, encode_request_frame, opcode_name,
+        read_u16, tlv_bytes, tlv_first, tlv_string, tlv_u32, tlv_u8, tlv_value_string,
+        tlv_value_u16, BtAction, ConnectedDevice, DiscoveredDevice, Frame, FrameType,
+        LastfmAction, Opcode, PlaybackAction, TlvType, DEFAULT_CHUNK_SIZE, DEFAULT_DEVICE_NAME,
+        FRAME_HEADER_LEN, FRAME_MAX_LEN, MAGIC, VERSION,
     },
 };
+
+    #[cfg(not(target_os = "android"))]
+    use crate::companion::protocol::{notify_uuid, service_uuid, write_uuid};
 
 #[derive(Debug)]
 struct ClientInner {
@@ -47,9 +54,14 @@ struct ClientInner {
 }
 
 pub struct CompanionBleClient {
+    #[cfg(not(target_os = "android"))]
     peripheral: Peripheral,
+    #[cfg(not(target_os = "android"))]
     write_char: Characteristic,
+    #[cfg(not(target_os = "android"))]
     notify_char: Characteristic,
+    #[cfg(target_os = "android")]
+    connection: AndroidBleConnection,
     max_chunk_size: usize,
     timeout: Duration,
     next_request_id: AtomicU32,
@@ -58,52 +70,18 @@ pub struct CompanionBleClient {
     connected_device: ConnectedDevice,
 }
 
-#[cfg(target_os = "android")]
-static ANDROID_BTLEPLUG_INIT_RESULT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
-
-#[cfg(target_os = "android")]
-static ANDROID_BTLEPLUG_JAVA_VM: OnceLock<jni019::JavaVM> = OnceLock::new();
-
-#[cfg(target_os = "android")]
-pub(crate) fn record_android_btleplug_init_result(result: std::result::Result<(), String>) {
-    let _ = ANDROID_BTLEPLUG_INIT_RESULT.set(result);
-}
-
-#[cfg(target_os = "android")]
-pub(crate) fn record_android_btleplug_java_vm(vm: jni019::JavaVM) {
-    let _ = ANDROID_BTLEPLUG_JAVA_VM.set(vm);
-}
-
-#[cfg(target_os = "android")]
-fn ensure_android_btleplug_initialized() -> Result<()> {
-    match ANDROID_BTLEPLUG_INIT_RESULT.get() {
-        Some(Ok(())) => Ok(()),
-        Some(Err(message)) => Err(CompanionError::AndroidBtleplugInit(message.clone())),
-        None => Err(CompanionError::AndroidBtleplugInit(
-            "Android startup hook did not initialize btleplug".into(),
-        )),
-    }
-}
-
-#[cfg(target_os = "android")]
-fn attach_android_btleplug_thread() -> Result<()> {
-    let vm = ANDROID_BTLEPLUG_JAVA_VM.get().ok_or_else(|| {
-        CompanionError::AndroidBtleplugInit(
-            "Android startup hook did not capture the Java VM for btleplug".into(),
-        )
-    })?;
-
-    vm.attach_current_thread_permanently()
-        .map(|_| ())
-        .map_err(|error| {
-            CompanionError::AndroidBtleplugInit(format!(
-                "failed to attach current thread to the Android JVM: {error}"
-            ))
-        })
-}
-
 impl CompanionBleClient {
     pub async fn scan(scan_timeout: Duration) -> Result<Vec<DiscoveredDevice>> {
+        #[cfg(target_os = "android")]
+        {
+            let mut results = android_ble::scan_devices(scan_timeout).await?;
+            results.retain(|device| device.service_match);
+            results.sort_by(|left, right| left.address.cmp(&right.address));
+            return Ok(results);
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
         let adapter = first_adapter().await?;
         adapter.start_scan(ScanFilter::default()).await?;
         sleep(scan_timeout).await;
@@ -135,6 +113,7 @@ impl CompanionBleClient {
 
         results.sort_by(|left, right| left.address.cmp(&right.address));
         Ok(results)
+        }
     }
 
     pub async fn connect(
@@ -144,6 +123,66 @@ impl CompanionBleClient {
         scan_timeout: Duration,
         timeout_duration: Duration,
     ) -> Result<Self> {
+        #[cfg(target_os = "android")]
+        {
+            let discovered = android_ble::scan_devices(scan_timeout).await?;
+            let selected = resolve_android_device(discovered, address, name)?;
+
+            let (connection, mut notifications) =
+                android_ble::connect(selected.address.clone(), timeout_duration).await?;
+
+            let (event_tx, _) = broadcast::channel(64);
+            let inner = Arc::new(ClientInner {
+                pending: Mutex::new(HashMap::new()),
+                rx_buffer: Mutex::new(Vec::new()),
+                event_tx,
+            });
+
+            let reader_inner = Arc::clone(&inner);
+            let notification_task = tokio::spawn(async move {
+                while let Some(notification) = notifications.recv().await {
+                    if process_notification_bytes(Arc::clone(&reader_inner), &notification)
+                        .await
+                        .is_err()
+                    {
+                        continue;
+                    }
+                }
+
+                fail_pending(
+                    &reader_inner,
+                    CompanionError::Protocol("notification stream ended".into()),
+                )
+                .await;
+            });
+
+            let device_name = if connection.name().is_empty() {
+                if selected.name.is_empty() {
+                    DEFAULT_DEVICE_NAME.to_string()
+                } else {
+                    selected.name.clone()
+                }
+            } else {
+                connection.name().to_string()
+            };
+
+            return Ok(Self {
+                connection,
+                max_chunk_size: DEFAULT_CHUNK_SIZE,
+                timeout: timeout_duration,
+                next_request_id: AtomicU32::new(1),
+                inner,
+                notification_task: Some(notification_task),
+                connected_device: ConnectedDevice {
+                    address: selected.address,
+                    name: device_name,
+                    profile: profile.to_string(),
+                },
+            });
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
         let adapter = first_adapter().await?;
         adapter.start_scan(ScanFilter::default()).await?;
         sleep(scan_timeout).await;
@@ -211,6 +250,7 @@ impl CompanionBleClient {
             notification_task: Some(notification_task),
             connected_device,
         })
+        }
     }
 
     pub fn connected_device(&self) -> &ConnectedDevice {
@@ -225,8 +265,18 @@ impl CompanionBleClient {
         if let Some(task) = self.notification_task.take() {
             task.abort();
         }
+
+        #[cfg(target_os = "android")]
+        {
+            let _ = android_ble::disconnect(&self.connection).await;
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
         let _ = self.peripheral.unsubscribe(&self.notify_char).await;
         let _ = self.peripheral.disconnect().await;
+        }
+
         fail_pending(&self.inner, CompanionError::NotConnected).await;
         Ok(())
     }
@@ -563,6 +613,10 @@ impl CompanionBleClient {
 
     async fn write(&self, data: &[u8]) -> Result<()> {
         for chunk in data.chunks(self.max_chunk_size) {
+            #[cfg(target_os = "android")]
+            android_ble::write_chunk(&self.connection, chunk.to_vec()).await?;
+
+            #[cfg(not(target_os = "android"))]
             self.peripheral
                 .write(&self.write_char, chunk, WriteType::WithoutResponse)
                 .await?;
@@ -571,13 +625,8 @@ impl CompanionBleClient {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 async fn first_adapter() -> Result<Adapter> {
-    #[cfg(target_os = "android")]
-    {
-        ensure_android_btleplug_initialized()?;
-        attach_android_btleplug_thread()?;
-    }
-
     let manager = Manager::new().await?;
     manager
         .adapters()
@@ -587,6 +636,7 @@ async fn first_adapter() -> Result<Adapter> {
         .ok_or(CompanionError::NoBluetoothAdapter)
 }
 
+#[cfg(not(target_os = "android"))]
 async fn resolve_device(
     adapter: &Adapter,
     address: Option<&str>,
@@ -623,6 +673,28 @@ async fn resolve_device(
         .ok_or(CompanionError::DeviceNotFound)
 }
 
+#[cfg(target_os = "android")]
+fn resolve_android_device(
+    devices: Vec<DiscoveredDevice>,
+    address: Option<&str>,
+    name: Option<&str>,
+) -> Result<DiscoveredDevice> {
+    devices
+        .into_iter()
+        .find(|device| {
+            let address_match = address
+                .map(|value| device.address.eq_ignore_ascii_case(value))
+                .unwrap_or(true);
+            let name_match = name.map(|value| device.name == value).unwrap_or(true);
+            let default_name_match = device.name == DEFAULT_DEVICE_NAME;
+
+            address_match
+                && name_match
+                && (address.is_some() || name.is_some() || device.service_match || default_name_match)
+        })
+        .ok_or(CompanionError::DeviceNotFound)
+}
+
 fn next_request_id(counter: &AtomicU32) -> u32 {
     loop {
         let current = counter.load(Ordering::Relaxed);
@@ -636,14 +708,11 @@ fn next_request_id(counter: &AtomicU32) -> u32 {
     }
 }
 
-async fn process_notification(
-    inner: Arc<ClientInner>,
-    notification: ValueNotification,
-) -> Result<()> {
+async fn process_notification_bytes(inner: Arc<ClientInner>, notification: &[u8]) -> Result<()> {
     let mut raw_frames = Vec::<Vec<u8>>::new();
     {
         let mut buffer = inner.rx_buffer.lock().await;
-        buffer.extend_from_slice(&notification.value);
+        buffer.extend_from_slice(notification);
 
         while buffer.len() >= FRAME_HEADER_LEN {
             if buffer[0..2] != MAGIC {
@@ -703,6 +772,14 @@ async fn process_notification(
         let _ = inner.event_tx.send(event);
     }
     Ok(())
+}
+
+#[cfg(not(target_os = "android"))]
+async fn process_notification(
+    inner: Arc<ClientInner>,
+    notification: ValueNotification,
+) -> Result<()> {
+    process_notification_bytes(inner, &notification.value).await
 }
 
 async fn fail_pending(inner: &ClientInner, error: CompanionError) {

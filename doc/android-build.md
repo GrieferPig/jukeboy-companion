@@ -65,15 +65,15 @@ This generates the Android project under `src-tauri/gen/android`.
 
 ## Android BLE integration
 
-This repository uses `btleplug` on Android, which is a hybrid Rust/Java integration. The validated Android project includes these repository-specific pieces:
+This repository now uses a native Android BLE bridge instead of `btleplug` when targeting Android. The validated Android project includes these repository-specific pieces:
 
-1. `src-tauri/src/lib.rs` initializes `btleplug` during Android startup and records any init failure instead of panicking in the JNI entrypoint.
-2. `src-tauri/gen/android/settings.gradle` includes the btleplug Android Java library from the local Cargo registry as the `:btleplug-android` Gradle subproject.
-3. `src-tauri/gen/android/app/build.gradle.kts` depends on `project(":btleplug-android")` so the Java classes are packaged into the APK.
-4. `src-tauri/gen/android/app/src/main/AndroidManifest.xml` includes location permissions and BLE feature declarations, while the btleplug library manifest contributes the Bluetooth permissions it needs.
-5. `src-tauri/gen/android/app/proguard-rules.pro` keeps btleplug JNI-loaded Java classes from being stripped in release builds.
+1. `src-tauri/src/lib.rs` initializes the Android BLE bridge during app startup and stores the JNI bridge state before the Tauri runtime starts.
+2. `src-tauri/src/companion/android_ble.rs` owns the Rust side of the Android JNI bridge, including scan/connect/write/disconnect calls and notification callbacks.
+3. `src-tauri/gen/android/app/src/main/java/com/grieferpig/jukeboy_companion/CompanionBleBridge.kt` owns the Android BLE scan, GATT session, write, disconnect, and notification logic.
+4. `src-tauri/src/companion/client.rs` keeps the frame protocol/session logic in Rust and switches to the native bridge only on Android builds.
+5. `src-tauri/gen/android/app/src/main/AndroidManifest.xml` and `src-tauri/gen/android/app/src/main/java/com/grieferpig/jukeboy_companion/MainActivity.kt` declare and request the Android BLE runtime permissions.
 
-If you regenerate `src-tauri/gen/android`, verify these files still contain the btleplug integration before testing BLE on Android.
+If you regenerate `src-tauri/gen/android`, verify the native bridge files are still present before testing BLE on Android.
 
 ## Build a debug APK
 
@@ -103,7 +103,7 @@ src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.
 - `sdkmanager` or command-line tools missing: install Android SDK command-line tools under `ANDROID_HOME/cmdline-tools/latest`.
 - Missing Rust target errors: rerun the `rustup target add ...` command above.
 - Missing Android project files: rerun `bun run tauri android init --ci`.
-- `failed to initialize btleplug on Android: Other(JavaException)`: confirm the generated Android project still includes `:btleplug-android` in `src-tauri/gen/android/settings.gradle` and `implementation(project(":btleplug-android"))` in `src-tauri/gen/android/app/build.gradle.kts`.
+- Android BLE bridge initialization errors: confirm `src-tauri/gen/android/app/src/main/java/com/grieferpig/jukeboy_companion/CompanionBleBridge.kt` still exists after any Android project regeneration.
 
 ## Release builds
 

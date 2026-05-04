@@ -1,6 +1,3 @@
 include ':app'
-include ':btleplug-android'
-
-project(':btleplug-android').projectDir = new File("C:\\Users\\GrieferPig\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\btleplug-0.12.0\\src\\droidplug\\java")
 
 apply from: 'tauri.settings.gradle'

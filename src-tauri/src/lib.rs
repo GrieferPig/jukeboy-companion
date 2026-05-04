@@ -51,24 +51,21 @@ mod android {
         activity: GlobalRef,
     ) {
         let init_result = (|| {
-            let btleplug_env = unsafe { jni019::JNIEnv::from_raw(env.get_raw().cast()) }
-                .map_err(|error| format!("failed to wrap Android JNIEnv for btleplug: {error}"))?;
-            let btleplug_vm = btleplug_env.get_java_vm().map_err(|error| {
-                format!("failed to capture Android JavaVM for btleplug: {error}")
-            })?;
+            let bridge_env =
+                unsafe { jni019::JNIEnv::from_raw(env.get_raw().cast()) }.map_err(|error| {
+                    format!("failed to wrap Android JNIEnv for the BLE bridge: {error}")
+                })?;
 
-            crate::companion::client::record_android_btleplug_java_vm(btleplug_vm);
-
-            btleplug::platform::init(&btleplug_env).map_err(|error| {
-                pending_exception_to_string(&mut env)
-                    .map(|exception| format!("{error}: {exception}"))
-                    .unwrap_or_else(|| error.to_string())
-            })
+            crate::companion::android_ble::init(&bridge_env, activity.as_obj().as_raw().cast())
+                .map_err(|error| {
+                    pending_exception_to_string(&mut env)
+                        .map(|exception| format!("{error}: {exception}"))
+                        .unwrap_or(error)
+                })
         })();
 
-        crate::companion::client::record_android_btleplug_init_result(init_result.clone());
         if let Err(error) = &init_result {
-            eprintln!("btleplug Android init failed: {error}");
+            eprintln!("Android BLE bridge init failed: {error}");
         }
 
         wry::android_setup(package, env, looper, activity);
