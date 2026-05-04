@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{atomic::{AtomicU32, Ordering}, Arc},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -8,7 +11,10 @@ use std::{
 use std::sync::OnceLock;
 
 use btleplug::{
-    api::{Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, ValueNotification, WriteType},
+    api::{
+        Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, ValueNotification,
+        WriteType,
+    },
     platform::{Adapter, Manager, Peripheral},
 };
 use futures_util::StreamExt;
@@ -22,14 +28,14 @@ use tokio::{
 use crate::companion::{
     error::{CompanionError, Result},
     protocol::{
-        build_auth_proof, decode_album, decode_auth_challenge, decode_auth_status, decode_capabilities,
-        decode_frame, decode_frame_bytes, decode_hello, decode_history_album_page, decode_pair_status,
-        decode_snapshot, decode_track_page, decode_trusted_list, decode_wifi_scan_results,
-        encode_request_frame, opcode_name, service_uuid, write_uuid, notify_uuid, BtAction,
-        ConnectedDevice, DiscoveredDevice, Frame, FrameType, LastfmAction,
-        Opcode, PlaybackAction, TlvType, DEFAULT_CHUNK_SIZE, DEFAULT_DEVICE_NAME, FRAME_HEADER_LEN,
-        FRAME_MAX_LEN, MAGIC, VERSION, read_u16, tlv_bytes, tlv_first, tlv_string, tlv_u32, tlv_u8,
-        tlv_value_string, tlv_value_u16,
+        build_auth_proof, decode_album, decode_auth_challenge, decode_auth_status,
+        decode_capabilities, decode_frame, decode_frame_bytes, decode_hello,
+        decode_history_album_page, decode_pair_status, decode_snapshot, decode_track_page,
+        decode_trusted_list, decode_wifi_scan_results, encode_request_frame, notify_uuid,
+        opcode_name, read_u16, service_uuid, tlv_bytes, tlv_first, tlv_string, tlv_u32, tlv_u8,
+        tlv_value_string, tlv_value_u16, write_uuid, BtAction, ConnectedDevice, DiscoveredDevice,
+        Frame, FrameType, LastfmAction, Opcode, PlaybackAction, TlvType, DEFAULT_CHUNK_SIZE,
+        DEFAULT_DEVICE_NAME, FRAME_HEADER_LEN, FRAME_MAX_LEN, MAGIC, VERSION,
     },
 };
 
@@ -87,11 +93,13 @@ fn attach_android_btleplug_thread() -> Result<()> {
         )
     })?;
 
-    vm.attach_current_thread_permanently().map(|_| ()).map_err(|error| {
-        CompanionError::AndroidBtleplugInit(format!(
-            "failed to attach current thread to the Android JVM: {error}"
-        ))
-    })
+    vm.attach_current_thread_permanently()
+        .map(|_| ())
+        .map_err(|error| {
+            CompanionError::AndroidBtleplugInit(format!(
+                "failed to attach current thread to the Android JVM: {error}"
+            ))
+        })
 }
 
 impl CompanionBleClient {
@@ -168,7 +176,10 @@ impl CompanionBleClient {
         let reader_inner = Arc::clone(&inner);
         let notification_task = tokio::spawn(async move {
             while let Some(notification) = notifications.next().await {
-                if process_notification(Arc::clone(&reader_inner), notification).await.is_err() {
+                if process_notification(Arc::clone(&reader_inner), notification)
+                    .await
+                    .is_err()
+                {
                     continue;
                 }
             }
@@ -225,11 +236,17 @@ impl CompanionBleClient {
     }
 
     pub async fn capabilities(&self) -> Result<Value> {
-        decode_capabilities(&self.request(Opcode::Capabilities as u16, None, None).await?)
+        decode_capabilities(
+            &self
+                .request(Opcode::Capabilities as u16, None, None)
+                .await?,
+        )
     }
 
     pub async fn ping(&self, text: &str) -> Result<Value> {
-        let frame = self.request(Opcode::Ping as u16, None, Some(text.as_bytes().to_vec())).await?;
+        let frame = self
+            .request(Opcode::Ping as u16, None, Some(text.as_bytes().to_vec()))
+            .await?;
         Ok(json!({
             "opcode": opcode_name(frame.opcode),
             "request_id": frame.request_id,
@@ -318,19 +335,35 @@ impl CompanionBleClient {
     }
 
     pub async fn playback_status(&self) -> Result<Value> {
-        decode_snapshot(&self.request(Opcode::PlaybackStatus as u16, None, None).await?)
+        decode_snapshot(
+            &self
+                .request(Opcode::PlaybackStatus as u16, None, None)
+                .await?,
+        )
     }
 
-    pub async fn playback_control(&self, action: PlaybackAction, value: Option<u32>) -> Result<Value> {
+    pub async fn playback_control(
+        &self,
+        action: PlaybackAction,
+        value: Option<u32>,
+    ) -> Result<Value> {
         let mut tlvs = vec![tlv_u8(TlvType::Action as u16, action as u8)];
         if let Some(value) = value {
             tlvs.push(tlv_u32(TlvType::Value as u16, value));
         }
-        decode_snapshot(&self.request(Opcode::PlaybackControl as u16, Some(tlvs), None).await?)
+        decode_snapshot(
+            &self
+                .request(Opcode::PlaybackControl as u16, Some(tlvs), None)
+                .await?,
+        )
     }
 
     pub async fn library_album(&self) -> Result<Value> {
-        decode_album(&self.request(Opcode::LibraryAlbum as u16, None, None).await?)
+        decode_album(
+            &self
+                .request(Opcode::LibraryAlbum as u16, None, None)
+                .await?,
+        )
     }
 
     pub async fn library_track_page(&self, offset: u32, count: u32) -> Result<Value> {
@@ -353,7 +386,11 @@ impl CompanionBleClient {
     }
 
     pub async fn wifi_scan_start(&self) -> Result<Value> {
-        decode_snapshot(&self.request(Opcode::WifiScanStart as u16, None, None).await?)
+        decode_snapshot(
+            &self
+                .request(Opcode::WifiScanStart as u16, None, None)
+                .await?,
+        )
     }
 
     pub async fn wifi_scan_results(&self, offset: u32, count: u32) -> Result<Value> {
@@ -399,7 +436,11 @@ impl CompanionBleClient {
     }
 
     pub async fn wifi_disconnect(&self) -> Result<Value> {
-        decode_snapshot(&self.request(Opcode::WifiDisconnect as u16, None, None).await?)
+        decode_snapshot(
+            &self
+                .request(Opcode::WifiDisconnect as u16, None, None)
+                .await?,
+        )
     }
 
     pub async fn wifi_autoreconnect(&self, enabled: bool) -> Result<Value> {
@@ -415,7 +456,11 @@ impl CompanionBleClient {
     }
 
     pub async fn lastfm_status(&self) -> Result<Value> {
-        decode_snapshot(&self.request(Opcode::LastfmStatus as u16, None, None).await?)
+        decode_snapshot(
+            &self
+                .request(Opcode::LastfmStatus as u16, None, None)
+                .await?,
+        )
     }
 
     pub async fn lastfm_control(
@@ -439,11 +484,19 @@ impl CompanionBleClient {
         if let Some(enabled) = enabled {
             tlvs.push(tlv_u32(TlvType::Value as u16, u32::from(enabled)));
         }
-        decode_snapshot(&self.request(Opcode::LastfmControl as u16, Some(tlvs), None).await?)
+        decode_snapshot(
+            &self
+                .request(Opcode::LastfmControl as u16, Some(tlvs), None)
+                .await?,
+        )
     }
 
     pub async fn history_summary(&self) -> Result<Value> {
-        decode_snapshot(&self.request(Opcode::HistorySummary as u16, None, None).await?)
+        decode_snapshot(
+            &self
+                .request(Opcode::HistorySummary as u16, None, None)
+                .await?,
+        )
     }
 
     pub async fn history_album_page(&self, offset: u32, count: u32) -> Result<Value> {
@@ -462,7 +515,11 @@ impl CompanionBleClient {
     }
 
     pub async fn bt_audio_status(&self) -> Result<Value> {
-        decode_snapshot(&self.request(Opcode::BtAudioStatus as u16, None, None).await?)
+        decode_snapshot(
+            &self
+                .request(Opcode::BtAudioStatus as u16, None, None)
+                .await?,
+        )
     }
 
     pub async fn bt_audio_control(&self, action: BtAction) -> Result<Value> {
@@ -477,7 +534,12 @@ impl CompanionBleClient {
         )
     }
 
-    async fn request(&self, opcode: u16, tlvs: Option<Vec<Vec<u8>>>, payload: Option<Vec<u8>>) -> Result<Frame> {
+    async fn request(
+        &self,
+        opcode: u16,
+        tlvs: Option<Vec<Vec<u8>>>,
+        payload: Option<Vec<u8>>,
+    ) -> Result<Frame> {
         let request_id = next_request_id(&self.next_request_id);
         let payload = payload.unwrap_or_else(|| tlvs.unwrap_or_default().concat());
         let frame = encode_request_frame(opcode, request_id, &payload);
@@ -525,13 +587,20 @@ async fn first_adapter() -> Result<Adapter> {
         .ok_or(CompanionError::NoBluetoothAdapter)
 }
 
-async fn resolve_device(adapter: &Adapter, address: Option<&str>, name: Option<&str>) -> Result<Peripheral> {
+async fn resolve_device(
+    adapter: &Adapter,
+    address: Option<&str>,
+    name: Option<&str>,
+) -> Result<Peripheral> {
     let mut filtered = Vec::new();
     for peripheral in adapter.peripherals().await? {
         let Some(properties) = peripheral.properties().await? else {
             continue;
         };
-        let service_match = properties.services.iter().any(|uuid| *uuid == service_uuid());
+        let service_match = properties
+            .services
+            .iter()
+            .any(|uuid| *uuid == service_uuid());
         let current_name = properties.local_name.unwrap_or_default();
         let name_match = current_name == DEFAULT_DEVICE_NAME;
         if let Some(address) = address {
@@ -548,7 +617,10 @@ async fn resolve_device(adapter: &Adapter, address: Option<&str>, name: Option<&
             filtered.push(peripheral);
         }
     }
-    filtered.into_iter().next().ok_or(CompanionError::DeviceNotFound)
+    filtered
+        .into_iter()
+        .next()
+        .ok_or(CompanionError::DeviceNotFound)
 }
 
 fn next_request_id(counter: &AtomicU32) -> u32 {
@@ -564,7 +636,10 @@ fn next_request_id(counter: &AtomicU32) -> u32 {
     }
 }
 
-async fn process_notification(inner: Arc<ClientInner>, notification: ValueNotification) -> Result<()> {
+async fn process_notification(
+    inner: Arc<ClientInner>,
+    notification: ValueNotification,
+) -> Result<()> {
     let mut raw_frames = Vec::<Vec<u8>>::new();
     {
         let mut buffer = inner.rx_buffer.lock().await;
@@ -596,7 +671,10 @@ async fn process_notification(inner: Arc<ClientInner>, notification: ValueNotifi
 
     for raw in raw_frames {
         let frame = decode_frame_bytes(&raw)?;
-        let is_response = matches!(FrameType::try_from(frame.frame_type)?, FrameType::Response | FrameType::Error);
+        let is_response = matches!(
+            FrameType::try_from(frame.frame_type)?,
+            FrameType::Response | FrameType::Error
+        );
         if is_response {
             let sender = inner.pending.lock().await.remove(&frame.request_id);
             if let Some(sender) = sender {
@@ -629,7 +707,10 @@ async fn process_notification(inner: Arc<ClientInner>, notification: ValueNotifi
 
 async fn fail_pending(inner: &ClientInner, error: CompanionError) {
     let mut pending = inner.pending.lock().await;
-    let senders = pending.drain().map(|(_, sender)| sender).collect::<Vec<_>>();
+    let senders = pending
+        .drain()
+        .map(|(_, sender)| sender)
+        .collect::<Vec<_>>();
     drop(pending);
     for sender in senders {
         let _ = sender.send(Err(CompanionError::Protocol(error.to_string())));
