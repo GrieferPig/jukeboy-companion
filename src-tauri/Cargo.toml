@@ -36,3 +36,4 @@ rand = "0.8"
 hex = "0.4"
 hmac = "0.12"
 sha2 = "0.10"
+jni019 = { package = "jni", version = "0.19" }

@@ -1,4 +1,11 @@
-use std::{collections::HashMap, sync::atomic::{AtomicU32, Ordering}, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{atomic::{AtomicU32, Ordering}, Arc},
+    time::Duration,
+};
+
+#[cfg(target_os = "android")]
+use std::sync::OnceLock;
 
 use btleplug::{
     api::{Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, ValueNotification, WriteType},
@@ -45,6 +52,48 @@ pub struct CompanionBleClient {
     connected_device: ConnectedDevice,
 }
 
+#[cfg(target_os = "android")]
+static ANDROID_BTLEPLUG_INIT_RESULT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+
+#[cfg(target_os = "android")]
+static ANDROID_BTLEPLUG_JAVA_VM: OnceLock<jni019::JavaVM> = OnceLock::new();
+
+#[cfg(target_os = "android")]
+pub(crate) fn record_android_btleplug_init_result(result: std::result::Result<(), String>) {
+    let _ = ANDROID_BTLEPLUG_INIT_RESULT.set(result);
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn record_android_btleplug_java_vm(vm: jni019::JavaVM) {
+    let _ = ANDROID_BTLEPLUG_JAVA_VM.set(vm);
+}
+
+#[cfg(target_os = "android")]
+fn ensure_android_btleplug_initialized() -> Result<()> {
+    match ANDROID_BTLEPLUG_INIT_RESULT.get() {
+        Some(Ok(())) => Ok(()),
+        Some(Err(message)) => Err(CompanionError::AndroidBtleplugInit(message.clone())),
+        None => Err(CompanionError::AndroidBtleplugInit(
+            "Android startup hook did not initialize btleplug".into(),
+        )),
+    }
+}
+
+#[cfg(target_os = "android")]
+fn attach_android_btleplug_thread() -> Result<()> {
+    let vm = ANDROID_BTLEPLUG_JAVA_VM.get().ok_or_else(|| {
+        CompanionError::AndroidBtleplugInit(
+            "Android startup hook did not capture the Java VM for btleplug".into(),
+        )
+    })?;
+
+    vm.attach_current_thread_permanently().map(|_| ()).map_err(|error| {
+        CompanionError::AndroidBtleplugInit(format!(
+            "failed to attach current thread to the Android JVM: {error}"
+        ))
+    })
+}
+
 impl CompanionBleClient {
     pub async fn scan(scan_timeout: Duration) -> Result<Vec<DiscoveredDevice>> {
         let adapter = first_adapter().await?;
@@ -52,6 +101,7 @@ impl CompanionBleClient {
         sleep(scan_timeout).await;
 
         let peripherals = adapter.peripherals().await?;
+        let service_uuid = service_uuid().to_string().to_lowercase();
         let mut results = Vec::new();
         for peripheral in peripherals {
             if let Some(properties) = peripheral.properties().await? {
@@ -60,10 +110,16 @@ impl CompanionBleClient {
                     .iter()
                     .map(|value| value.to_string().to_lowercase())
                     .collect();
+                let service_match = uuids.iter().any(|uuid| uuid == &service_uuid);
+
+                if !service_match {
+                    continue;
+                }
+
                 results.push(DiscoveredDevice {
                     address: peripheral.address().to_string(),
                     name: properties.local_name.unwrap_or_default(),
-                    service_match: uuids.iter().any(|uuid| uuid == &service_uuid().to_string().to_lowercase()),
+                    service_match,
                     uuids,
                 });
             }
@@ -454,6 +510,12 @@ impl CompanionBleClient {
 }
 
 async fn first_adapter() -> Result<Adapter> {
+    #[cfg(target_os = "android")]
+    {
+        ensure_android_btleplug_initialized()?;
+        attach_android_btleplug_thread()?;
+    }
+
     let manager = Manager::new().await?;
     manager
         .adapters()

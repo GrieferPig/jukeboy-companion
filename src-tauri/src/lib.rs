@@ -14,12 +14,128 @@ use commands::{
 };
 use companion::AppState;
 
+#[cfg(target_os = "android")]
+mod android {
+    use super::run;
+    use tauri::wry::{
+        self,
+        prelude::{ndk::looper::ThreadLooper, GlobalRef, JClass, JNIEnv, JString},
+    };
+
+    fn pending_exception_to_string(env: &mut JNIEnv) -> Option<String> {
+        if !env.exception_check().ok()? {
+            return None;
+        }
+
+        let throwable = env.exception_occurred().ok()?;
+        let _ = env.exception_clear();
+        let description = env
+            .call_method(&throwable, "toString", "()Ljava/lang/String;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        let description: JString = description.into();
+        let description = env
+            .get_string(&description)
+            .ok()?
+            .to_string_lossy()
+            .into_owned();
+
+        Some(description)
+    }
+
+    unsafe fn android_setup_with_btleplug(
+        package: &str,
+        mut env: JNIEnv,
+        looper: &ThreadLooper,
+        activity: GlobalRef,
+    ) {
+        let init_result = (|| {
+            let btleplug_env = unsafe { jni019::JNIEnv::from_raw(env.get_raw().cast()) }
+                .map_err(|error| format!("failed to wrap Android JNIEnv for btleplug: {error}"))?;
+            let btleplug_vm = btleplug_env.get_java_vm().map_err(|error| {
+                format!("failed to capture Android JavaVM for btleplug: {error}")
+            })?;
+
+            crate::companion::client::record_android_btleplug_java_vm(btleplug_vm);
+
+            btleplug::platform::init(&btleplug_env).map_err(|error| {
+                pending_exception_to_string(&mut env)
+                    .map(|exception| format!("{error}: {exception}"))
+                    .unwrap_or_else(|| error.to_string())
+            })
+        })();
+
+        crate::companion::client::record_android_btleplug_init_result(init_result.clone());
+        if let Err(error) = &init_result {
+            eprintln!("btleplug Android init failed: {error}");
+        }
+
+        wry::android_setup(package, env, looper, activity);
+    }
+
+    fn stop_unwind<F: FnOnce() -> T, T>(f: F) -> T {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("attempt to unwind out of `rust` with err: {:?}", err);
+                std::process::abort()
+            }
+        }
+    }
+
+    fn _start_app() {
+        tauri::wry::android_binding!(com_grieferpig, jukeboy_companion, ::tauri::wry);
+        tauri::tao::android_binding!(
+            com_grieferpig,
+            jukeboy_companion,
+            Rust,
+            android_setup_with_btleplug,
+            _start_app,
+            ::tauri::tao
+        );
+
+        tauri::tao::platform::android::prelude::android_fn!(
+            app_tauri,
+            plugin,
+            PluginManager,
+            handlePluginResponse,
+            [i32, JString, JString],
+        );
+        tauri::tao::platform::android::prelude::android_fn!(
+            app_tauri,
+            plugin,
+            PluginManager,
+            sendChannelData,
+            [i64, JString],
+        );
+
+        #[allow(non_snake_case)]
+        pub fn handlePluginResponse(
+            mut env: JNIEnv,
+            _: JClass,
+            id: i32,
+            success: JString,
+            error: JString,
+        ) {
+            tauri::handle_android_plugin_response(&mut env, id, success, error);
+        }
+
+        #[allow(non_snake_case)]
+        pub fn sendChannelData(mut env: JNIEnv, _: JClass, id: i64, data: JString) {
+            tauri::send_channel_data(&mut env, id, data);
+        }
+
+        stop_unwind(run);
+    }
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {name}! You've been greeted from Rust!")
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[cfg_attr(all(mobile, not(target_os = "android")), tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
