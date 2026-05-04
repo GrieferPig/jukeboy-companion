@@ -70,6 +70,9 @@ pub struct CompanionBleClient {
     connected_device: ConnectedDevice,
 }
 
+const LIBRARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+const LIBRARY_REQUEST_MAX_RETRIES: usize = 3;
+
 impl CompanionBleClient {
     pub async fn scan(scan_timeout: Duration) -> Result<Vec<DiscoveredDevice>> {
         #[cfg(target_os = "android")]
@@ -411,7 +414,13 @@ impl CompanionBleClient {
     pub async fn library_album(&self) -> Result<Value> {
         decode_album(
             &self
-                .request(Opcode::LibraryAlbum as u16, None, None)
+                .request_with_retry(
+                    Opcode::LibraryAlbum as u16,
+                    None,
+                    None,
+                    LIBRARY_REQUEST_TIMEOUT,
+                    LIBRARY_REQUEST_MAX_RETRIES,
+                )
                 .await?,
         )
     }
@@ -419,13 +428,15 @@ impl CompanionBleClient {
     pub async fn library_track_page(&self, offset: u32, count: u32) -> Result<Value> {
         decode_track_page(
             &self
-                .request(
+                .request_with_retry(
                     Opcode::LibraryTrackPage as u16,
                     Some(vec![
                         tlv_u32(TlvType::Offset as u16, offset),
                         tlv_u32(TlvType::Count as u16, count),
                     ]),
                     None,
+                    LIBRARY_REQUEST_TIMEOUT,
+                    LIBRARY_REQUEST_MAX_RETRIES,
                 )
                 .await?,
         )
@@ -590,25 +601,43 @@ impl CompanionBleClient {
         tlvs: Option<Vec<Vec<u8>>>,
         payload: Option<Vec<u8>>,
     ) -> Result<Frame> {
+        self.request_with_retry(opcode, tlvs, payload, self.timeout, 0)
+            .await
+    }
+
+    async fn request_with_retry(
+        &self,
+        opcode: u16,
+        tlvs: Option<Vec<Vec<u8>>>,
+        payload: Option<Vec<u8>>,
+        timeout_duration: Duration,
+        max_retries: usize,
+    ) -> Result<Frame> {
         let request_id = next_request_id(&self.next_request_id);
         let payload = payload.unwrap_or_else(|| tlvs.unwrap_or_default().concat());
         let frame = encode_request_frame(opcode, request_id, &payload);
 
-        let (sender, receiver) = oneshot::channel();
-        self.inner.pending.lock().await.insert(request_id, sender);
-        if let Err(error) = self.write(&frame).await {
-            self.inner.pending.lock().await.remove(&request_id);
-            return Err(error);
-        }
-
-        match timeout(self.timeout, receiver).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(CompanionError::NotConnected),
-            Err(_) => {
+        for attempt in 0..=max_retries {
+            let (sender, receiver) = oneshot::channel();
+            self.inner.pending.lock().await.insert(request_id, sender);
+            if let Err(error) = self.write(&frame).await {
                 self.inner.pending.lock().await.remove(&request_id);
-                Err(CompanionError::Timeout)
+                return Err(error);
+            }
+
+            match timeout(timeout_duration, receiver).await {
+                Ok(Ok(result)) => return result,
+                Ok(Err(_)) => return Err(CompanionError::NotConnected),
+                Err(_) => {
+                    self.inner.pending.lock().await.remove(&request_id);
+                    if attempt == max_retries {
+                        return Err(CompanionError::Timeout);
+                    }
+                }
             }
         }
+
+        Err(CompanionError::Timeout)
     }
 
     async fn write(&self, data: &[u8]) -> Result<()> {
