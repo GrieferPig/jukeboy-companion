@@ -2,6 +2,37 @@ use std::io;
 
 use thiserror::Error;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransportFailureKind {
+    AdapterUnavailable,
+    NotConnected,
+}
+
+fn classify_transport_message(message: &str) -> Option<TransportFailureKind> {
+    let normalized = message.to_ascii_lowercase();
+
+    if normalized.contains("object has been closed")
+        || normalized.contains("notification stream ended")
+        || normalized.contains("ble device is not connected")
+        || normalized.contains("ble device disconnected")
+        || normalized.contains("ble session is not connected")
+        || normalized.contains("peripheral disconnected")
+        || (normalized.contains("ble session") && normalized.contains("not available"))
+    {
+        return Some(TransportFailureKind::NotConnected);
+    }
+
+    if normalized.contains("no bluetooth adapter")
+        || normalized.contains("bluetooth adapter is unavailable")
+        || normalized.contains("bluetooth adapter is disabled")
+        || normalized.contains("bluetooth is disabled")
+    {
+        return Some(TransportFailureKind::AdapterUnavailable);
+    }
+
+    None
+}
+
 #[cfg(not(target_os = "android"))]
 fn format_btleplug_error(error: &btleplug::Error) -> String {
     let message = error.to_string();
@@ -60,11 +91,59 @@ pub enum CompanionError {
     AppDataPathUnavailable,
 }
 
+impl CompanionError {
+    pub fn android_ble_bridge(message: impl Into<String>) -> Self {
+        let message = message.into();
+
+        match classify_transport_message(&message) {
+            Some(TransportFailureKind::NotConnected) => Self::NotConnected,
+            Some(TransportFailureKind::AdapterUnavailable) => Self::NoBluetoothAdapter,
+            None => Self::AndroidBleBridge(message),
+        }
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 impl From<btleplug::Error> for CompanionError {
     fn from(error: btleplug::Error) -> Self {
-        Self::Btleplug(format_btleplug_error(&error))
+        match classify_transport_message(&error.to_string()) {
+            Some(TransportFailureKind::NotConnected) => Self::NotConnected,
+            Some(TransportFailureKind::AdapterUnavailable) => Self::NoBluetoothAdapter,
+            None => Self::Btleplug(format_btleplug_error(&error)),
+        }
     }
 }
 
 pub type Result<T> = std::result::Result<T, CompanionError>;
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_transport_message, TransportFailureKind};
+
+    #[test]
+    fn classifies_closed_transport_as_not_connected() {
+        let message =
+            "BTLE plug error: Error { code: HRESULT(0x80000013), message: \"The object has been closed.\" }";
+
+        assert_eq!(
+            classify_transport_message(message),
+            Some(TransportFailureKind::NotConnected)
+        );
+    }
+
+    #[test]
+    fn classifies_android_session_closure_as_not_connected() {
+        assert_eq!(
+            classify_transport_message("Android BLE write failed: BLE session 7 is not available"),
+            Some(TransportFailureKind::NotConnected)
+        );
+    }
+
+    #[test]
+    fn classifies_disabled_adapter_as_unavailable() {
+        assert_eq!(
+            classify_transport_message("Android BLE connect failed: Bluetooth adapter is disabled"),
+            Some(TransportFailureKind::AdapterUnavailable)
+        );
+    }
+}

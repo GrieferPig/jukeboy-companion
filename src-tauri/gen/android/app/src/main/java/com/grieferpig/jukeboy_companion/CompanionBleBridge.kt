@@ -174,8 +174,14 @@ class CompanionBleBridge private constructor(private val activity: Activity) {
   }
 
   private fun requireBluetoothAdapter(): BluetoothAdapter {
-    return activity.getSystemService(BluetoothManager::class.java)?.adapter
+    val adapter = activity.getSystemService(BluetoothManager::class.java)?.adapter
       ?: throw IllegalStateException("Bluetooth adapter is unavailable")
+
+    if (!adapter.isEnabled) {
+      throw IllegalStateException("Bluetooth adapter is disabled")
+    }
+
+    return adapter
   }
 
   @SuppressLint("MissingPermission")
@@ -310,6 +316,7 @@ class CompanionBleBridge private constructor(private val activity: Activity) {
       }
     }
 
+    @Synchronized
     @SuppressLint("MissingPermission")
     fun writeChunk(payload: ByteArray) {
       val bluetoothGatt = gatt ?: throw IllegalStateException("BLE session is not connected")

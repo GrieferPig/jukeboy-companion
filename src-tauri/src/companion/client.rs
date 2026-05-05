@@ -6,6 +6,7 @@ use std::{
     },
     time::Duration,
 };
+const REQUEST_DEQUEUE_DELAY: Duration = Duration::from_millis(100);
 
 #[cfg(target_os = "android")]
 use crate::companion::android_ble::{self, AndroidBleConnection};
@@ -35,20 +36,21 @@ use crate::companion::{
         build_auth_proof, decode_album, decode_auth_challenge, decode_auth_status,
         decode_capabilities, decode_frame, decode_frame_bytes, decode_hello,
         decode_history_album_page, decode_pair_status, decode_snapshot, decode_track_page,
-        decode_trusted_list, decode_wifi_scan_results, encode_request_frame, opcode_name,
-        read_u16, tlv_bytes, tlv_first, tlv_string, tlv_u32, tlv_u8, tlv_value_string,
-        tlv_value_u16, BtAction, ConnectedDevice, DiscoveredDevice, Frame, FrameType,
-        LastfmAction, Opcode, PlaybackAction, TlvType, DEFAULT_CHUNK_SIZE, DEFAULT_DEVICE_NAME,
-        FRAME_HEADER_LEN, FRAME_MAX_LEN, MAGIC, VERSION,
+        decode_trusted_list, decode_wifi_scan_results, encode_request_frame, opcode_name, read_u16,
+        tlv_bytes, tlv_first, tlv_string, tlv_u32, tlv_u8, tlv_value_string, tlv_value_u16,
+        BtAction, ConnectedDevice, DiscoveredDevice, Frame, FrameType, LastfmAction, Opcode,
+        PlaybackAction, TlvType, DEFAULT_CHUNK_SIZE, DEFAULT_DEVICE_NAME, FRAME_HEADER_LEN,
+        FRAME_MAX_LEN, MAGIC, VERSION,
     },
 };
 
-    #[cfg(not(target_os = "android"))]
-    use crate::companion::protocol::{notify_uuid, service_uuid, write_uuid};
+#[cfg(not(target_os = "android"))]
+use crate::companion::protocol::{notify_uuid, service_uuid, write_uuid};
 
 #[derive(Debug)]
 struct ClientInner {
     pending: Mutex<HashMap<u32, oneshot::Sender<Result<Frame>>>>,
+    request_gate: Mutex<()>,
     rx_buffer: Mutex<Vec<u8>>,
     event_tx: broadcast::Sender<Value>,
 }
@@ -70,9 +72,6 @@ pub struct CompanionBleClient {
     connected_device: ConnectedDevice,
 }
 
-const LIBRARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
-const LIBRARY_REQUEST_MAX_RETRIES: usize = 3;
-
 impl CompanionBleClient {
     pub async fn scan(scan_timeout: Duration) -> Result<Vec<DiscoveredDevice>> {
         #[cfg(target_os = "android")]
@@ -85,37 +84,37 @@ impl CompanionBleClient {
 
         #[cfg(not(target_os = "android"))]
         {
-        let adapter = first_adapter().await?;
-        adapter.start_scan(ScanFilter::default()).await?;
-        sleep(scan_timeout).await;
+            let adapter = first_adapter().await?;
+            adapter.start_scan(ScanFilter::default()).await?;
+            sleep(scan_timeout).await;
 
-        let peripherals = adapter.peripherals().await?;
-        let service_uuid = service_uuid().to_string().to_lowercase();
-        let mut results = Vec::new();
-        for peripheral in peripherals {
-            if let Some(properties) = peripheral.properties().await? {
-                let uuids: Vec<String> = properties
-                    .services
-                    .iter()
-                    .map(|value| value.to_string().to_lowercase())
-                    .collect();
-                let service_match = uuids.iter().any(|uuid| uuid == &service_uuid);
+            let peripherals = adapter.peripherals().await?;
+            let service_uuid = service_uuid().to_string().to_lowercase();
+            let mut results = Vec::new();
+            for peripheral in peripherals {
+                if let Some(properties) = peripheral.properties().await? {
+                    let uuids: Vec<String> = properties
+                        .services
+                        .iter()
+                        .map(|value| value.to_string().to_lowercase())
+                        .collect();
+                    let service_match = uuids.iter().any(|uuid| uuid == &service_uuid);
 
-                if !service_match {
-                    continue;
+                    if !service_match {
+                        continue;
+                    }
+
+                    results.push(DiscoveredDevice {
+                        address: peripheral.address().to_string(),
+                        name: properties.local_name.unwrap_or_default(),
+                        service_match,
+                        uuids,
+                    });
                 }
-
-                results.push(DiscoveredDevice {
-                    address: peripheral.address().to_string(),
-                    name: properties.local_name.unwrap_or_default(),
-                    service_match,
-                    uuids,
-                });
             }
-        }
 
-        results.sort_by(|left, right| left.address.cmp(&right.address));
-        Ok(results)
+            results.sort_by(|left, right| left.address.cmp(&right.address));
+            Ok(results)
         }
     }
 
@@ -137,6 +136,7 @@ impl CompanionBleClient {
             let (event_tx, _) = broadcast::channel(64);
             let inner = Arc::new(ClientInner {
                 pending: Mutex::new(HashMap::new()),
+                request_gate: Mutex::new(()),
                 rx_buffer: Mutex::new(Vec::new()),
                 event_tx,
             });
@@ -152,11 +152,7 @@ impl CompanionBleClient {
                     }
                 }
 
-                fail_pending(
-                    &reader_inner,
-                    CompanionError::Protocol("notification stream ended".into()),
-                )
-                .await;
+                fail_pending(&reader_inner, CompanionError::NotConnected).await;
             });
 
             let device_name = if connection.name().is_empty() {
@@ -186,73 +182,72 @@ impl CompanionBleClient {
 
         #[cfg(not(target_os = "android"))]
         {
-        let adapter = first_adapter().await?;
-        adapter.start_scan(ScanFilter::default()).await?;
-        sleep(scan_timeout).await;
+            let adapter = first_adapter().await?;
+            adapter.start_scan(ScanFilter::default()).await?;
+            sleep(scan_timeout).await;
 
-        let peripheral = resolve_device(&adapter, address, name).await?;
-        peripheral.connect().await?;
-        peripheral.discover_services().await?;
+            let peripheral = resolve_device(&adapter, address, name).await?;
+            peripheral.connect().await?;
+            peripheral.discover_services().await?;
 
-        let characteristics = peripheral.characteristics();
-        let write_char = characteristics
-            .iter()
-            .find(|characteristic| characteristic.uuid == write_uuid())
-            .cloned()
-            .ok_or_else(|| CompanionError::Protocol("write characteristic not found".into()))?;
-        let notify_char = characteristics
-            .iter()
-            .find(|characteristic| characteristic.uuid == notify_uuid())
-            .cloned()
-            .ok_or_else(|| CompanionError::Protocol("notify characteristic not found".into()))?;
+            let characteristics = peripheral.characteristics();
+            let write_char = characteristics
+                .iter()
+                .find(|characteristic| characteristic.uuid == write_uuid())
+                .cloned()
+                .ok_or_else(|| CompanionError::Protocol("write characteristic not found".into()))?;
+            let notify_char = characteristics
+                .iter()
+                .find(|characteristic| characteristic.uuid == notify_uuid())
+                .cloned()
+                .ok_or_else(|| {
+                    CompanionError::Protocol("notify characteristic not found".into())
+                })?;
 
-        let (event_tx, _) = broadcast::channel(64);
-        let inner = Arc::new(ClientInner {
-            pending: Mutex::new(HashMap::new()),
-            rx_buffer: Mutex::new(Vec::new()),
-            event_tx,
-        });
+            let (event_tx, _) = broadcast::channel(64);
+            let inner = Arc::new(ClientInner {
+                pending: Mutex::new(HashMap::new()),
+                request_gate: Mutex::new(()),
+                rx_buffer: Mutex::new(Vec::new()),
+                event_tx,
+            });
 
-        peripheral.subscribe(&notify_char).await?;
-        let mut notifications = peripheral.notifications().await?;
-        let reader_inner = Arc::clone(&inner);
-        let notification_task = tokio::spawn(async move {
-            while let Some(notification) = notifications.next().await {
-                if process_notification(Arc::clone(&reader_inner), notification)
-                    .await
-                    .is_err()
-                {
-                    continue;
+            peripheral.subscribe(&notify_char).await?;
+            let mut notifications = peripheral.notifications().await?;
+            let reader_inner = Arc::clone(&inner);
+            let notification_task = tokio::spawn(async move {
+                while let Some(notification) = notifications.next().await {
+                    if process_notification(Arc::clone(&reader_inner), notification)
+                        .await
+                        .is_err()
+                    {
+                        continue;
+                    }
                 }
-            }
-            fail_pending(
-                &reader_inner,
-                CompanionError::Protocol("notification stream ended".into()),
-            )
-            .await;
-        });
+                fail_pending(&reader_inner, CompanionError::NotConnected).await;
+            });
 
-        let connected_device = ConnectedDevice {
-            address: peripheral.address().to_string(),
-            name: peripheral
-                .properties()
-                .await?
-                .and_then(|properties| properties.local_name)
-                .unwrap_or_else(|| DEFAULT_DEVICE_NAME.to_string()),
-            profile: profile.to_string(),
-        };
+            let connected_device = ConnectedDevice {
+                address: peripheral.address().to_string(),
+                name: peripheral
+                    .properties()
+                    .await?
+                    .and_then(|properties| properties.local_name)
+                    .unwrap_or_else(|| DEFAULT_DEVICE_NAME.to_string()),
+                profile: profile.to_string(),
+            };
 
-        Ok(Self {
-            peripheral,
-            write_char,
-            notify_char,
-            max_chunk_size: DEFAULT_CHUNK_SIZE,
-            timeout: timeout_duration,
-            next_request_id: AtomicU32::new(1),
-            inner,
-            notification_task: Some(notification_task),
-            connected_device,
-        })
+            Ok(Self {
+                peripheral,
+                write_char,
+                notify_char,
+                max_chunk_size: DEFAULT_CHUNK_SIZE,
+                timeout: timeout_duration,
+                next_request_id: AtomicU32::new(1),
+                inner,
+                notification_task: Some(notification_task),
+                connected_device,
+            })
         }
     }
 
@@ -276,8 +271,8 @@ impl CompanionBleClient {
 
         #[cfg(not(target_os = "android"))]
         {
-        let _ = self.peripheral.unsubscribe(&self.notify_char).await;
-        let _ = self.peripheral.disconnect().await;
+            let _ = self.peripheral.unsubscribe(&self.notify_char).await;
+            let _ = self.peripheral.disconnect().await;
         }
 
         fail_pending(&self.inner, CompanionError::NotConnected).await;
@@ -414,13 +409,7 @@ impl CompanionBleClient {
     pub async fn library_album(&self) -> Result<Value> {
         decode_album(
             &self
-                .request_with_retry(
-                    Opcode::LibraryAlbum as u16,
-                    None,
-                    None,
-                    LIBRARY_REQUEST_TIMEOUT,
-                    LIBRARY_REQUEST_MAX_RETRIES,
-                )
+                .request(Opcode::LibraryAlbum as u16, None, None)
                 .await?,
         )
     }
@@ -428,15 +417,13 @@ impl CompanionBleClient {
     pub async fn library_track_page(&self, offset: u32, count: u32) -> Result<Value> {
         decode_track_page(
             &self
-                .request_with_retry(
+                .request(
                     Opcode::LibraryTrackPage as u16,
                     Some(vec![
                         tlv_u32(TlvType::Offset as u16, offset),
                         tlv_u32(TlvType::Count as u16, count),
                     ]),
                     None,
-                    LIBRARY_REQUEST_TIMEOUT,
-                    LIBRARY_REQUEST_MAX_RETRIES,
                 )
                 .await?,
         )
@@ -601,43 +588,29 @@ impl CompanionBleClient {
         tlvs: Option<Vec<Vec<u8>>>,
         payload: Option<Vec<u8>>,
     ) -> Result<Frame> {
-        self.request_with_retry(opcode, tlvs, payload, self.timeout, 0)
-            .await
-    }
-
-    async fn request_with_retry(
-        &self,
-        opcode: u16,
-        tlvs: Option<Vec<Vec<u8>>>,
-        payload: Option<Vec<u8>>,
-        timeout_duration: Duration,
-        max_retries: usize,
-    ) -> Result<Frame> {
+        let _request_guard = self.inner.request_gate.lock().await;
         let request_id = next_request_id(&self.next_request_id);
         let payload = payload.unwrap_or_else(|| tlvs.unwrap_or_default().concat());
         let frame = encode_request_frame(opcode, request_id, &payload);
 
-        for attempt in 0..=max_retries {
-            let (sender, receiver) = oneshot::channel();
-            self.inner.pending.lock().await.insert(request_id, sender);
-            if let Err(error) = self.write(&frame).await {
-                self.inner.pending.lock().await.remove(&request_id);
-                return Err(error);
-            }
-
-            match timeout(timeout_duration, receiver).await {
-                Ok(Ok(result)) => return result,
-                Ok(Err(_)) => return Err(CompanionError::NotConnected),
-                Err(_) => {
-                    self.inner.pending.lock().await.remove(&request_id);
-                    if attempt == max_retries {
-                        return Err(CompanionError::Timeout);
-                    }
-                }
-            }
+        let (sender, receiver) = oneshot::channel();
+        self.inner.pending.lock().await.insert(request_id, sender);
+        if let Err(error) = self.write(&frame).await {
+            self.inner.pending.lock().await.remove(&request_id);
+            return Err(error);
         }
 
-        Err(CompanionError::Timeout)
+        match timeout(self.timeout, receiver).await {
+            Ok(Ok(result)) => {
+                sleep(REQUEST_DEQUEUE_DELAY).await;
+                result
+            }
+            Ok(Err(_)) => Err(CompanionError::NotConnected),
+            Err(_) => {
+                self.inner.pending.lock().await.remove(&request_id);
+                Err(CompanionError::Timeout)
+            }
+        }
     }
 
     async fn write(&self, data: &[u8]) -> Result<()> {
@@ -719,7 +692,10 @@ fn resolve_android_device(
 
             address_match
                 && name_match
-                && (address.is_some() || name.is_some() || device.service_match || default_name_match)
+                && (address.is_some()
+                    || name.is_some()
+                    || device.service_match
+                    || default_name_match)
         })
         .ok_or(CompanionError::DeviceNotFound)
 }
@@ -812,6 +788,8 @@ async fn process_notification(
 }
 
 async fn fail_pending(inner: &ClientInner, error: CompanionError) {
+    let disconnected = matches!(error, CompanionError::NotConnected);
+    let message = error.to_string();
     let mut pending = inner.pending.lock().await;
     let senders = pending
         .drain()
@@ -819,6 +797,10 @@ async fn fail_pending(inner: &ClientInner, error: CompanionError) {
         .collect::<Vec<_>>();
     drop(pending);
     for sender in senders {
-        let _ = sender.send(Err(CompanionError::Protocol(error.to_string())));
+        let _ = sender.send(Err(if disconnected {
+            CompanionError::NotConnected
+        } else {
+            CompanionError::Protocol(message.clone())
+        }));
     }
 }

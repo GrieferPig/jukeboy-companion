@@ -338,7 +338,9 @@ pub fn parse_tlvs(payload: &[u8]) -> Result<Vec<Tlv>> {
         let tlv_len = read_u16(&payload[offset + 2..offset + 4])? as usize;
         offset += TLV_HEADER_LEN;
         if offset + tlv_len > payload.len() {
-            return Err(CompanionError::Protocol("TLV exceeds payload length".into()));
+            return Err(CompanionError::Protocol(
+                "TLV exceeds payload length".into(),
+            ));
         }
         tlvs.push(Tlv {
             tlv_type,
@@ -347,7 +349,9 @@ pub fn parse_tlvs(payload: &[u8]) -> Result<Vec<Tlv>> {
         offset += tlv_len;
     }
     if offset != payload.len() {
-        return Err(CompanionError::Protocol("trailing bytes after TLV parse".into()));
+        return Err(CompanionError::Protocol(
+            "trailing bytes after TLV parse".into(),
+        ));
     }
     Ok(tlvs)
 }
@@ -367,7 +371,9 @@ pub fn decode_frame_bytes(raw: &[u8]) -> Result<Frame> {
     let request_id = read_u32(&raw[6..10])?;
     let payload_len = read_u16(&raw[10..12])? as usize;
     if FRAME_HEADER_LEN + payload_len > raw.len() {
-        return Err(CompanionError::Protocol("payload length exceeds frame size".into()));
+        return Err(CompanionError::Protocol(
+            "payload length exceeds frame size".into(),
+        ));
     }
     let payload = raw[12..12 + payload_len].to_vec();
     let tlvs = if frame_type != FrameType::Response || opcode != Opcode::Ping as u16 {
@@ -402,21 +408,30 @@ pub fn tlv_first<'a>(tlvs: &'a [Tlv], tlv_type: u16) -> Option<&'a Tlv> {
 
 pub fn tlv_value_u8(tlv: &Tlv) -> Result<u8> {
     if tlv.value.len() != 1 {
-        return Err(CompanionError::Protocol(format!("TLV {} is not u8", tlv.name())));
+        return Err(CompanionError::Protocol(format!(
+            "TLV {} is not u8",
+            tlv.name()
+        )));
     }
     Ok(tlv.value[0])
 }
 
 pub fn tlv_value_u16(tlv: &Tlv) -> Result<u16> {
     if tlv.value.len() != 2 {
-        return Err(CompanionError::Protocol(format!("TLV {} is not u16", tlv.name())));
+        return Err(CompanionError::Protocol(format!(
+            "TLV {} is not u16",
+            tlv.name()
+        )));
     }
     read_u16(&tlv.value)
 }
 
 pub fn tlv_value_u32(tlv: &Tlv) -> Result<u32> {
     if tlv.value.len() != 4 {
-        return Err(CompanionError::Protocol(format!("TLV {} is not u32", tlv.name())));
+        return Err(CompanionError::Protocol(format!(
+            "TLV {} is not u32",
+            tlv.name()
+        )));
     }
     read_u32(&tlv.value)
 }
@@ -430,7 +445,11 @@ pub fn tlv_value_string(tlv: &Tlv) -> String {
 }
 
 pub fn decode_slot(value: u8) -> Option<u8> {
-    if value == 0 { None } else { Some(value - 1) }
+    if value == 0 {
+        None
+    } else {
+        Some(value - 1)
+    }
 }
 
 pub fn decode_ip_address(value: u32) -> String {
@@ -439,11 +458,18 @@ pub fn decode_ip_address(value: u32) -> String {
 }
 
 pub fn ensure_track_index(value: u32) -> Option<u32> {
-    if value == u32::MAX { None } else { Some(value) }
+    if value == u32::MAX {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 pub fn button_sequence_names(sequence: &[u8]) -> Vec<String> {
-    sequence.iter().map(|value| button_id_to_name(*value).to_string()).collect()
+    sequence
+        .iter()
+        .map(|value| button_id_to_name(*value).to_string())
+        .collect()
 }
 
 pub fn button_id_to_name(value: u8) -> &'static str {
@@ -692,7 +718,8 @@ pub fn generate_pairing_credentials(
     CompanionCredentials {
         client_id: client_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         app_name: app_name.unwrap_or_else(|| "jukeboy-companion".to_string()),
-        secret_hex: secret_hex.unwrap_or_else(|| hex::encode(rand::thread_rng().gen::<[u8; PAIR_SECRET_LEN]>())),
+        secret_hex: secret_hex
+            .unwrap_or_else(|| hex::encode(rand::thread_rng().gen::<[u8; PAIR_SECRET_LEN]>())),
     }
 }
 
@@ -713,9 +740,15 @@ pub fn decode_auth_status(frame: &Frame) -> Result<Value> {
     });
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
-            value if value == TlvType::Authenticated as u16 => result["authenticated"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::ClientId as u16 => result["client_id"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::TrustedCount as u16 => result["trusted_client_count"] = json!(tlv_value_u8(tlv)?),
+            value if value == TlvType::Authenticated as u16 => {
+                result["authenticated"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::ClientId as u16 => {
+                result["client_id"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::TrustedCount as u16 => {
+                result["trusted_client_count"] = json!(tlv_value_u8(tlv)?)
+            }
             _ => {}
         }
     }
@@ -728,8 +761,12 @@ pub fn decode_hello(frame: &Frame) -> Result<Value> {
     result["protocol_version"] = Value::Null;
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
-            value if value == TlvType::AppName as u16 => result["app_name"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::ProtocolVersion as u16 => result["protocol_version"] = json!(tlv_value_u16(tlv)?),
+            value if value == TlvType::AppName as u16 => {
+                result["app_name"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::ProtocolVersion as u16 => {
+                result["protocol_version"] = json!(tlv_value_u16(tlv)?)
+            }
             _ => {}
         }
     }
@@ -749,12 +786,24 @@ pub fn decode_pair_status(frame: &Frame) -> Result<Value> {
     });
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
-            value if value == TlvType::PairingPending as u16 => result["pairing_pending"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::PairingProgress as u16 => result["pairing_progress"] = json!(tlv_value_u8(tlv)?),
-            value if value == TlvType::PairingRequired as u16 => result["pairing_required"] = json!(tlv_value_u8(tlv)?),
-            value if value == TlvType::ClientId as u16 => result["pending_client_id"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::AppName as u16 => result["pending_app_name"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::ButtonSequence as u16 => result["button_sequence"] = json!(button_sequence_names(&tlv.value)),
+            value if value == TlvType::PairingPending as u16 => {
+                result["pairing_pending"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::PairingProgress as u16 => {
+                result["pairing_progress"] = json!(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::PairingRequired as u16 => {
+                result["pairing_required"] = json!(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::ClientId as u16 => {
+                result["pending_client_id"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::AppName as u16 => {
+                result["pending_app_name"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::ButtonSequence as u16 => {
+                result["button_sequence"] = json!(button_sequence_names(&tlv.value))
+            }
             _ => {}
         }
     }
@@ -780,11 +829,19 @@ pub fn decode_capabilities(frame: &Frame) -> Result<Value> {
     let mut client_id_seen = 0u8;
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
-            value if value == TlvType::ProtocolVersion as u16 => result["protocol_version"] = json!(tlv_value_u16(tlv)?),
-            value if value == TlvType::MaxFrame as u16 => result["max_frame"] = json!(tlv_value_u16(tlv)?),
+            value if value == TlvType::ProtocolVersion as u16 => {
+                result["protocol_version"] = json!(tlv_value_u16(tlv)?)
+            }
+            value if value == TlvType::MaxFrame as u16 => {
+                result["max_frame"] = json!(tlv_value_u16(tlv)?)
+            }
             value if value == TlvType::Mtu as u16 => result["mtu"] = json!(tlv_value_u16(tlv)?),
-            value if value == TlvType::MaxPayload as u16 => result["max_payload"] = json!(tlv_value_u16(tlv)?),
-            value if value == TlvType::FeatureBits as u16 => result["feature_bits"] = json!(tlv_value_u32(tlv)?),
+            value if value == TlvType::MaxPayload as u16 => {
+                result["max_payload"] = json!(tlv_value_u16(tlv)?)
+            }
+            value if value == TlvType::FeatureBits as u16 => {
+                result["feature_bits"] = json!(tlv_value_u32(tlv)?)
+            }
             value if value == TlvType::ClientId as u16 => {
                 client_id_seen += 1;
                 if client_id_seen == 1 {
@@ -793,11 +850,21 @@ pub fn decode_capabilities(frame: &Frame) -> Result<Value> {
                     result["pairing"]["pending_client_id"] = json!(tlv_value_string(tlv));
                 }
             }
-            value if value == TlvType::PairingPending as u16 => result["pairing"]["pairing_pending"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::PairingProgress as u16 => result["pairing"]["pairing_progress"] = json!(tlv_value_u8(tlv)?),
-            value if value == TlvType::PairingRequired as u16 => result["pairing"]["pairing_required"] = json!(tlv_value_u8(tlv)?),
-            value if value == TlvType::AppName as u16 => result["pairing"]["pending_app_name"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::ButtonSequence as u16 => result["pairing"]["button_sequence"] = json!(button_sequence_names(&tlv.value)),
+            value if value == TlvType::PairingPending as u16 => {
+                result["pairing"]["pairing_pending"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::PairingProgress as u16 => {
+                result["pairing"]["pairing_progress"] = json!(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::PairingRequired as u16 => {
+                result["pairing"]["pairing_required"] = json!(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::AppName as u16 => {
+                result["pairing"]["pending_app_name"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::ButtonSequence as u16 => {
+                result["pairing"]["button_sequence"] = json!(button_sequence_names(&tlv.value))
+            }
             _ => {}
         }
     }
@@ -813,8 +880,12 @@ pub fn decode_auth_challenge(frame: &Frame) -> Result<Value> {
     });
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
-            value if value == TlvType::ClientId as u16 => result["client_id"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::AuthNonce as u16 => result["nonce_hex"] = json!(hex::encode(&tlv.value)),
+            value if value == TlvType::ClientId as u16 => {
+                result["client_id"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::AuthNonce as u16 => {
+                result["nonce_hex"] = json!(hex::encode(&tlv.value))
+            }
             _ => {}
         }
     }
@@ -833,7 +904,9 @@ pub fn decode_trusted_list(frame: &Frame) -> Result<Value> {
     let mut has_current = false;
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
-            value if value == TlvType::TrustedCount as u16 => result["trusted_count"] = json!(tlv_value_u8(tlv)?),
+            value if value == TlvType::TrustedCount as u16 => {
+                result["trusted_count"] = json!(tlv_value_u8(tlv)?)
+            }
             value if value == TlvType::ClientId as u16 => {
                 if has_current {
                     clients.push(current);
@@ -845,8 +918,12 @@ pub fn decode_trusted_list(frame: &Frame) -> Result<Value> {
                 });
                 has_current = true;
             }
-            value if value == TlvType::AppName as u16 && has_current => current["app_name"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::CreatedAt as u16 && has_current => current["created_at"] = json!(tlv_value_u32(tlv)?),
+            value if value == TlvType::AppName as u16 && has_current => {
+                current["app_name"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::CreatedAt as u16 && has_current => {
+                current["created_at"] = json!(tlv_value_u32(tlv)?)
+            }
             _ => {}
         }
     }
@@ -936,9 +1013,15 @@ pub fn decode_snapshot(frame: &Frame) -> Result<Value> {
     let mut track_count_seen = 0u8;
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
-            value if value == TlvType::Generation as u16 => result["generation"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::UptimeMs as u16 => result["uptime_ms"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::Authenticated as u16 => result["auth"]["authenticated"] = json!(tlv_value_bool(tlv)?),
+            value if value == TlvType::Generation as u16 => {
+                result["generation"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::UptimeMs as u16 => {
+                result["uptime_ms"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::Authenticated as u16 => {
+                result["auth"]["authenticated"] = json!(tlv_value_bool(tlv)?)
+            }
             value if value == TlvType::ClientId as u16 => {
                 client_id_seen += 1;
                 if client_id_seen == 1 {
@@ -947,14 +1030,30 @@ pub fn decode_snapshot(frame: &Frame) -> Result<Value> {
                     result["pairing"]["pending_client_id"] = json!(tlv_value_string(tlv));
                 }
             }
-            value if value == TlvType::TrustedCount as u16 => result["auth"]["trusted_client_count"] = json!(tlv_value_u8(tlv)?),
-            value if value == TlvType::PairingPending as u16 => result["pairing"]["pairing_pending"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::PairingProgress as u16 => result["pairing"]["pairing_progress"] = json!(tlv_value_u8(tlv)?),
-            value if value == TlvType::PairingRequired as u16 => result["pairing"]["pairing_required"] = json!(tlv_value_u8(tlv)?),
-            value if value == TlvType::AppName as u16 => result["pairing"]["pending_app_name"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::ButtonSequence as u16 => result["pairing"]["button_sequence"] = json!(button_sequence_names(&tlv.value)),
-            value if value == TlvType::Playing as u16 => result["playback"]["playing"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::Paused as u16 => result["playback"]["paused"] = json!(tlv_value_bool(tlv)?),
+            value if value == TlvType::TrustedCount as u16 => {
+                result["auth"]["trusted_client_count"] = json!(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::PairingPending as u16 => {
+                result["pairing"]["pairing_pending"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::PairingProgress as u16 => {
+                result["pairing"]["pairing_progress"] = json!(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::PairingRequired as u16 => {
+                result["pairing"]["pairing_required"] = json!(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::AppName as u16 => {
+                result["pairing"]["pending_app_name"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::ButtonSequence as u16 => {
+                result["pairing"]["button_sequence"] = json!(button_sequence_names(&tlv.value))
+            }
+            value if value == TlvType::Playing as u16 => {
+                result["playback"]["playing"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::Paused as u16 => {
+                result["playback"]["paused"] = json!(tlv_value_bool(tlv)?)
+            }
             value if value == TlvType::CartridgeChecksum as u16 => {
                 cartridge_checksum_seen += 1;
                 if cartridge_checksum_seen == 1 {
@@ -963,7 +1062,9 @@ pub fn decode_snapshot(frame: &Frame) -> Result<Value> {
                     result["cartridge"]["checksum"] = json!(tlv_value_u32(tlv)?);
                 }
             }
-            value if value == TlvType::TrackIndex as u16 => result["playback"]["track_index"] = json!(ensure_track_index(tlv_value_u32(tlv)?)),
+            value if value == TlvType::TrackIndex as u16 => {
+                result["playback"]["track_index"] = json!(ensure_track_index(tlv_value_u32(tlv)?))
+            }
             value if value == TlvType::TrackCount as u16 => {
                 track_count_seen += 1;
                 if track_count_seen == 1 {
@@ -972,40 +1073,108 @@ pub fn decode_snapshot(frame: &Frame) -> Result<Value> {
                     result["cartridge"]["track_count"] = json!(tlv_value_u32(tlv)?);
                 }
             }
-            value if value == TlvType::PositionSec as u16 => result["playback"]["position_sec"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::StartedAt as u16 => result["playback"]["started_at"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::DurationSec as u16 => result["playback"]["duration_sec"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::VolumePercent as u16 => result["playback"]["volume_percent"] = json!(tlv_value_u8(tlv)?),
-            value if value == TlvType::PlaybackMode as u16 => result["playback"]["playback_mode"] = playback_mode_from_id(tlv_value_u8(tlv)?),
-            value if value == TlvType::TrackTitle as u16 => result["playback"]["track_title"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::TrackArtist as u16 => result["playback"]["track_artist"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::TrackFile as u16 => result["playback"]["track_file"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::OutputTarget as u16 => result["playback"]["output_target"] = output_target_from_id(tlv_value_u8(tlv)?),
-            value if value == TlvType::CartridgeStatus as u16 => result["cartridge"]["status"] = cartridge_status_from_id(tlv_value_u8(tlv)?),
-            value if value == TlvType::CartridgeMounted as u16 => result["cartridge"]["mounted"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::MetadataVersion as u16 => result["cartridge"]["metadata_version"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::WifiState as u16 => result["wifi"]["state"] = wifi_state_from_id(tlv_value_u8(tlv)?),
-            value if value == TlvType::WifiInternet as u16 => result["wifi"]["internet"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::WifiAutoreconnect as u16 => result["wifi"]["autoreconnect"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::WifiActiveSlot as u16 => result["wifi"]["active_slot"] = json!(decode_slot(tlv_value_u8(tlv)?)),
-            value if value == TlvType::WifiPreferredSlot as u16 => result["wifi"]["preferred_slot"] = json!(decode_slot(tlv_value_u8(tlv)?)),
-            value if value == TlvType::WifiIp as u16 => result["wifi"]["ip"] = json!(decode_ip_address(tlv_value_u32(tlv)?)),
-            value if value == TlvType::LastfmHasAuthUrl as u16 => result["lastfm"]["has_auth_url"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::LastfmHasToken as u16 => result["lastfm"]["has_token"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::LastfmHasSession as u16 => result["lastfm"]["has_session"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::LastfmBusy as u16 => result["lastfm"]["busy"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::LastfmScrobbling as u16 => result["lastfm"]["scrobbling"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::LastfmNowPlaying as u16 => result["lastfm"]["now_playing"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::LastfmPendingCommands as u16 => result["lastfm"]["pending_commands"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::LastfmPendingScrobbles as u16 => result["lastfm"]["pending_scrobbles"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::LastfmSuccessful as u16 => result["lastfm"]["successful"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::LastfmFailed as u16 => result["lastfm"]["failed"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::LastfmAuthUrl as u16 => result["lastfm"]["auth_url"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::LastfmUsername as u16 => result["lastfm"]["username"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::HistoryAlbumCount as u16 => result["history"]["album_count"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::HistoryTrackCount as u16 => result["history"]["track_count"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::BtA2dpConnected as u16 => result["bluetooth"]["a2dp_connected"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::BtBondedCount as u16 => result["bluetooth"]["bonded_count"] = json!(tlv_value_u32(tlv)?),
+            value if value == TlvType::PositionSec as u16 => {
+                result["playback"]["position_sec"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::StartedAt as u16 => {
+                result["playback"]["started_at"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::DurationSec as u16 => {
+                result["playback"]["duration_sec"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::VolumePercent as u16 => {
+                result["playback"]["volume_percent"] = json!(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::PlaybackMode as u16 => {
+                result["playback"]["playback_mode"] = playback_mode_from_id(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::TrackTitle as u16 => {
+                result["playback"]["track_title"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::TrackArtist as u16 => {
+                result["playback"]["track_artist"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::TrackFile as u16 => {
+                result["playback"]["track_file"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::OutputTarget as u16 => {
+                result["playback"]["output_target"] = output_target_from_id(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::CartridgeStatus as u16 => {
+                result["cartridge"]["status"] = cartridge_status_from_id(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::CartridgeMounted as u16 => {
+                result["cartridge"]["mounted"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::MetadataVersion as u16 => {
+                result["cartridge"]["metadata_version"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::WifiState as u16 => {
+                result["wifi"]["state"] = wifi_state_from_id(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::WifiInternet as u16 => {
+                result["wifi"]["internet"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::WifiAutoreconnect as u16 => {
+                result["wifi"]["autoreconnect"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::WifiActiveSlot as u16 => {
+                result["wifi"]["active_slot"] = json!(decode_slot(tlv_value_u8(tlv)?))
+            }
+            value if value == TlvType::WifiPreferredSlot as u16 => {
+                result["wifi"]["preferred_slot"] = json!(decode_slot(tlv_value_u8(tlv)?))
+            }
+            value if value == TlvType::WifiIp as u16 => {
+                result["wifi"]["ip"] = json!(decode_ip_address(tlv_value_u32(tlv)?))
+            }
+            value if value == TlvType::LastfmHasAuthUrl as u16 => {
+                result["lastfm"]["has_auth_url"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::LastfmHasToken as u16 => {
+                result["lastfm"]["has_token"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::LastfmHasSession as u16 => {
+                result["lastfm"]["has_session"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::LastfmBusy as u16 => {
+                result["lastfm"]["busy"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::LastfmScrobbling as u16 => {
+                result["lastfm"]["scrobbling"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::LastfmNowPlaying as u16 => {
+                result["lastfm"]["now_playing"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::LastfmPendingCommands as u16 => {
+                result["lastfm"]["pending_commands"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::LastfmPendingScrobbles as u16 => {
+                result["lastfm"]["pending_scrobbles"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::LastfmSuccessful as u16 => {
+                result["lastfm"]["successful"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::LastfmFailed as u16 => {
+                result["lastfm"]["failed"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::LastfmAuthUrl as u16 => {
+                result["lastfm"]["auth_url"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::LastfmUsername as u16 => {
+                result["lastfm"]["username"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::HistoryAlbumCount as u16 => {
+                result["history"]["album_count"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::HistoryTrackCount as u16 => {
+                result["history"]["track_count"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::BtA2dpConnected as u16 => {
+                result["bluetooth"]["a2dp_connected"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::BtBondedCount as u16 => {
+                result["bluetooth"]["bonded_count"] = json!(tlv_value_u32(tlv)?)
+            }
             _ => {}
         }
     }
@@ -1034,17 +1203,39 @@ pub fn decode_album(frame: &Frame) -> Result<Value> {
     });
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
-            value if value == TlvType::CartridgeStatus as u16 => result["cartridge"]["status"] = cartridge_status_from_id(tlv_value_u8(tlv)?),
-            value if value == TlvType::CartridgeMounted as u16 => result["cartridge"]["mounted"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::CartridgeChecksum as u16 => result["cartridge"]["checksum"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::MetadataVersion as u16 => result["cartridge"]["metadata_version"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::TrackCount as u16 => result["cartridge"]["track_count"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::AlbumName as u16 => result["album"]["name"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::AlbumArtist as u16 => result["album"]["artist"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::AlbumDescription as u16 => result["album"]["description"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::AlbumYear as u16 => result["album"]["year"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::AlbumDuration as u16 => result["album"]["duration_sec"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::AlbumGenre as u16 => result["album"]["genre"] = json!(tlv_value_string(tlv)),
+            value if value == TlvType::CartridgeStatus as u16 => {
+                result["cartridge"]["status"] = cartridge_status_from_id(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::CartridgeMounted as u16 => {
+                result["cartridge"]["mounted"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::CartridgeChecksum as u16 => {
+                result["cartridge"]["checksum"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::MetadataVersion as u16 => {
+                result["cartridge"]["metadata_version"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::TrackCount as u16 => {
+                result["cartridge"]["track_count"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::AlbumName as u16 => {
+                result["album"]["name"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::AlbumArtist as u16 => {
+                result["album"]["artist"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::AlbumDescription as u16 => {
+                result["album"]["description"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::AlbumYear as u16 => {
+                result["album"]["year"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::AlbumDuration as u16 => {
+                result["album"]["duration_sec"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::AlbumGenre as u16 => {
+                result["album"]["genre"] = json!(tlv_value_string(tlv))
+            }
             _ => {}
         }
     }
@@ -1071,8 +1262,12 @@ pub fn decode_track_page(frame: &Frame) -> Result<Value> {
     let mut has_current = false;
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
-            value if value == TlvType::Offset as u16 => result["offset"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::TrackCount as u16 => result["track_count"] = json!(tlv_value_u32(tlv)?),
+            value if value == TlvType::Offset as u16 => {
+                result["offset"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::TrackCount as u16 => {
+                result["track_count"] = json!(tlv_value_u32(tlv)?)
+            }
             value if value == TlvType::TrackIndex as u16 => {
                 if has_current {
                     tracks.push(current);
@@ -1086,11 +1281,21 @@ pub fn decode_track_page(frame: &Frame) -> Result<Value> {
                 });
                 has_current = true;
             }
-            value if value == TlvType::TrackTitle as u16 && has_current => current["title"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::TrackArtist as u16 && has_current => current["artist"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::DurationSec as u16 && has_current => current["duration_sec"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::TrackFile as u16 && has_current => current["file_num"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::ReturnedCount as u16 => result["returned_count"] = json!(tlv_value_u32(tlv)?),
+            value if value == TlvType::TrackTitle as u16 && has_current => {
+                current["title"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::TrackArtist as u16 && has_current => {
+                current["artist"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::DurationSec as u16 && has_current => {
+                current["duration_sec"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::TrackFile as u16 && has_current => {
+                current["file_num"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::ReturnedCount as u16 => {
+                result["returned_count"] = json!(tlv_value_u32(tlv)?)
+            }
             _ => {}
         }
     }
@@ -1120,8 +1325,12 @@ pub fn decode_wifi_scan_results(frame: &Frame) -> Result<Value> {
     let mut has_current = false;
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
-            value if value == TlvType::Offset as u16 => result["offset"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::Count as u16 => result["total_count"] = json!(tlv_value_u32(tlv)?),
+            value if value == TlvType::Offset as u16 => {
+                result["offset"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::Count as u16 => {
+                result["total_count"] = json!(tlv_value_u32(tlv)?)
+            }
             value if value == TlvType::WifiSsid as u16 => {
                 if has_current {
                     items.push(current);
@@ -1134,10 +1343,18 @@ pub fn decode_wifi_scan_results(frame: &Frame) -> Result<Value> {
                 });
                 has_current = true;
             }
-            value if value == TlvType::WifiRssi as u16 && has_current => current["rssi"] = json!(read_i32_from_u32(tlv_value_u32(tlv)?)),
-            value if value == TlvType::WifiChannel as u16 && has_current => current["channel"] = json!(tlv_value_u8(tlv)?),
-            value if value == TlvType::WifiAuthMode as u16 && has_current => current["authmode"] = json!(tlv_value_u8(tlv)?),
-            value if value == TlvType::ReturnedCount as u16 => result["returned_count"] = json!(tlv_value_u32(tlv)?),
+            value if value == TlvType::WifiRssi as u16 && has_current => {
+                current["rssi"] = json!(read_i32_from_u32(tlv_value_u32(tlv)?))
+            }
+            value if value == TlvType::WifiChannel as u16 && has_current => {
+                current["channel"] = json!(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::WifiAuthMode as u16 && has_current => {
+                current["authmode"] = json!(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::ReturnedCount as u16 => {
+                result["returned_count"] = json!(tlv_value_u32(tlv)?)
+            }
             _ => {}
         }
     }
@@ -1169,8 +1386,12 @@ pub fn decode_history_album_page(frame: &Frame) -> Result<Value> {
     let mut has_current = false;
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
-            value if value == TlvType::Offset as u16 => result["offset"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::HistoryAlbumCount as u16 => result["album_count"] = json!(tlv_value_u32(tlv)?),
+            value if value == TlvType::Offset as u16 => {
+                result["offset"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::HistoryAlbumCount as u16 => {
+                result["album_count"] = json!(tlv_value_u32(tlv)?)
+            }
             value if value == TlvType::CartridgeChecksum as u16 => {
                 if has_current {
                     items.push(current);
@@ -1185,12 +1406,24 @@ pub fn decode_history_album_page(frame: &Frame) -> Result<Value> {
                 });
                 has_current = true;
             }
-            value if value == TlvType::TrackCount as u16 && has_current => current["track_count"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::HistoryFirstSeen as u16 && has_current => current["first_seen_sequence"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::HistoryLastSeen as u16 && has_current => current["last_seen_sequence"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::AlbumName as u16 && has_current => current["album_name"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::AlbumArtist as u16 && has_current => current["album_artist"] = json!(tlv_value_string(tlv)),
-            value if value == TlvType::ReturnedCount as u16 => result["returned_count"] = json!(tlv_value_u32(tlv)?),
+            value if value == TlvType::TrackCount as u16 && has_current => {
+                current["track_count"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::HistoryFirstSeen as u16 && has_current => {
+                current["first_seen_sequence"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::HistoryLastSeen as u16 && has_current => {
+                current["last_seen_sequence"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::AlbumName as u16 && has_current => {
+                current["album_name"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::AlbumArtist as u16 && has_current => {
+                current["album_artist"] = json!(tlv_value_string(tlv))
+            }
+            value if value == TlvType::ReturnedCount as u16 => {
+                result["returned_count"] = json!(tlv_value_u32(tlv)?)
+            }
             _ => {}
         }
     }
@@ -1216,13 +1449,27 @@ pub fn decode_heartbeat(frame: &Frame) -> Result<Value> {
     });
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
-            value if value == TlvType::UptimeMs as u16 => result["uptime_ms"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::Generation as u16 => result["generation"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::Authenticated as u16 => result["authenticated"] = json!(tlv_value_bool(tlv)?),
-            value if value == TlvType::QueueFree as u16 => result["queue_free"] = json!(tlv_value_u8(tlv)?),
-            value if value == TlvType::RxFrames as u16 => result["rx_frames"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::TxFrames as u16 => result["tx_frames"] = json!(tlv_value_u32(tlv)?),
-            value if value == TlvType::RxErrors as u16 => result["rx_errors"] = json!(tlv_value_u32(tlv)?),
+            value if value == TlvType::UptimeMs as u16 => {
+                result["uptime_ms"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::Generation as u16 => {
+                result["generation"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::Authenticated as u16 => {
+                result["authenticated"] = json!(tlv_value_bool(tlv)?)
+            }
+            value if value == TlvType::QueueFree as u16 => {
+                result["queue_free"] = json!(tlv_value_u8(tlv)?)
+            }
+            value if value == TlvType::RxFrames as u16 => {
+                result["rx_frames"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::TxFrames as u16 => {
+                result["tx_frames"] = json!(tlv_value_u32(tlv)?)
+            }
+            value if value == TlvType::RxErrors as u16 => {
+                result["rx_errors"] = json!(tlv_value_u32(tlv)?)
+            }
             _ => {}
         }
     }
@@ -1263,6 +1510,29 @@ pub fn decode_frame(frame: &Frame) -> Result<Value> {
     }
     if frame.frame_type == FrameType::Event as u8 && frame.opcode == Opcode::PairStatus as u16 {
         let mut decoded = decode_pair_status(frame)?;
+        decoded["frame_type"] = json!(frame_type_name(frame.frame_type));
+        return Ok(decoded);
+    }
+    if frame.frame_type == FrameType::Event as u8
+        && matches!(
+            frame.opcode,
+            value if value == Opcode::Snapshot as u16
+                || value == Opcode::PlaybackStatus as u16
+                || value == Opcode::PlaybackControl as u16
+                || value == Opcode::WifiStatus as u16
+                || value == Opcode::WifiScanStart as u16
+                || value == Opcode::WifiConnect as u16
+                || value == Opcode::WifiConnectSlot as u16
+                || value == Opcode::WifiDisconnect as u16
+                || value == Opcode::WifiAutoreconnect as u16
+                || value == Opcode::LastfmStatus as u16
+                || value == Opcode::LastfmControl as u16
+                || value == Opcode::HistorySummary as u16
+                || value == Opcode::BtAudioStatus as u16
+                || value == Opcode::BtAudioControl as u16
+        )
+    {
+        let mut decoded = decode_snapshot(frame)?;
         decoded["frame_type"] = json!(frame_type_name(frame.frame_type));
         return Ok(decoded);
     }

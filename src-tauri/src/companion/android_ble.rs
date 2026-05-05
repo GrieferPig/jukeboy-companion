@@ -24,8 +24,9 @@ use crate::companion::{
 static ANDROID_BLE_BRIDGE_INIT_RESULT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 static ANDROID_BLE_BRIDGE_VM: OnceLock<JavaVM> = OnceLock::new();
 static ANDROID_BLE_BRIDGE: OnceLock<GlobalRef> = OnceLock::new();
-static ANDROID_BLE_NOTIFICATION_SENDERS: OnceLock<Mutex<HashMap<i64, mpsc::UnboundedSender<Vec<u8>>>>> =
-    OnceLock::new();
+static ANDROID_BLE_NOTIFICATION_SENDERS: OnceLock<
+    Mutex<HashMap<i64, mpsc::UnboundedSender<Vec<u8>>>>,
+> = OnceLock::new();
 static NEXT_ANDROID_BLE_SESSION_ID: AtomicI64 = AtomicI64::new(1);
 
 const BRIDGE_CLASS: &str = "com/grieferpig/jukeboy_companion/CompanionBleBridge";
@@ -80,7 +81,9 @@ pub(crate) fn init(env: &JNIEnv, activity: jobject) -> std::result::Result<(), S
                 },
             ],
         )
-        .map_err(|error| format!("failed to register Android BLE bridge native methods: {error}"))?;
+        .map_err(|error| {
+            format!("failed to register Android BLE bridge native methods: {error}")
+        })?;
 
         let activity = JObject::from(activity);
         let bridge = env
@@ -130,7 +133,7 @@ async fn run_blocking<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T> + Send + 'static,
 ) -> Result<T> {
     task::spawn_blocking(operation).await.map_err(|error| {
-        CompanionError::AndroidBleBridge(format!("Android BLE task failed: {error}"))
+        CompanionError::android_ble_bridge(format!("Android BLE task failed: {error}"))
     })?
 }
 
@@ -138,7 +141,11 @@ fn scan_devices_blocking(scan_timeout: Duration) -> Result<Vec<DiscoveredDevice>
     with_bridge_env(|env, bridge| {
         let service_uuid = env
             .new_string(service_uuid().to_string())
-            .map_err(|error| CompanionError::AndroidBleBridge(format!("failed to allocate service UUID string: {error}")))?;
+            .map_err(|error| {
+                CompanionError::android_ble_bridge(format!(
+                    "failed to allocate service UUID string: {error}"
+                ))
+            })?;
         let response = env
             .call_method(
                 bridge.as_obj(),
@@ -150,7 +157,9 @@ fn scan_devices_blocking(scan_timeout: Duration) -> Result<Vec<DiscoveredDevice>
                 ],
             )
             .and_then(|value| value.l())
-            .map_err(|error| CompanionError::AndroidBleBridge(format!("Android BLE scan failed: {error}")))?;
+            .map_err(|error| {
+                CompanionError::android_ble_bridge(format!("Android BLE scan failed: {error}"))
+            })?;
         parse_json_string(env, response, "scan results")
     })
 }
@@ -167,18 +176,28 @@ fn connect_blocking(
         .insert(session_id, notification_tx);
 
     let connect_result = with_bridge_env(|env, bridge| {
-        let address = env
-            .new_string(&address)
-            .map_err(|error| CompanionError::AndroidBleBridge(format!("failed to allocate Android BLE address string: {error}")))?;
+        let address = env.new_string(&address).map_err(|error| {
+            CompanionError::android_ble_bridge(format!(
+                "failed to allocate Android BLE address string: {error}"
+            ))
+        })?;
         let service_uuid = env
             .new_string(service_uuid().to_string())
-            .map_err(|error| CompanionError::AndroidBleBridge(format!("failed to allocate service UUID string: {error}")))?;
-        let write_uuid = env
-            .new_string(write_uuid().to_string())
-            .map_err(|error| CompanionError::AndroidBleBridge(format!("failed to allocate write UUID string: {error}")))?;
-        let notify_uuid = env
-            .new_string(notify_uuid().to_string())
-            .map_err(|error| CompanionError::AndroidBleBridge(format!("failed to allocate notify UUID string: {error}")))?;
+            .map_err(|error| {
+                CompanionError::android_ble_bridge(format!(
+                    "failed to allocate service UUID string: {error}"
+                ))
+            })?;
+        let write_uuid = env.new_string(write_uuid().to_string()).map_err(|error| {
+            CompanionError::android_ble_bridge(format!(
+                "failed to allocate write UUID string: {error}"
+            ))
+        })?;
+        let notify_uuid = env.new_string(notify_uuid().to_string()).map_err(|error| {
+            CompanionError::android_ble_bridge(format!(
+                "failed to allocate notify UUID string: {error}"
+            ))
+        })?;
 
         let response = env
             .call_method(
@@ -195,7 +214,7 @@ fn connect_blocking(
                 ],
             )
             .and_then(|value| value.l())
-            .map_err(|error| CompanionError::AndroidBleBridge(format!("Android BLE connect failed: {error}")))?;
+            .map_err(|error| CompanionError::android_ble_bridge(format!("Android BLE connect failed: {error}")))?;
         parse_json_string::<AndroidConnectResult>(env, response, "connect result")
     });
 
@@ -216,9 +235,11 @@ fn connect_blocking(
 
 fn write_chunk_blocking(session_id: i64, chunk: Vec<u8>) -> Result<()> {
     with_bridge_env(|env, bridge| {
-        let chunk = env
-            .byte_array_from_slice(&chunk)
-            .map_err(|error| CompanionError::AndroidBleBridge(format!("failed to allocate Android BLE write buffer: {error}")))?;
+        let chunk = env.byte_array_from_slice(&chunk).map_err(|error| {
+            CompanionError::android_ble_bridge(format!(
+                "failed to allocate Android BLE write buffer: {error}"
+            ))
+        })?;
         env.call_method(
             bridge.as_obj(),
             "writeChunk",
@@ -229,7 +250,9 @@ fn write_chunk_blocking(session_id: i64, chunk: Vec<u8>) -> Result<()> {
             ],
         )
         .map(|_| ())
-        .map_err(|error| CompanionError::AndroidBleBridge(format!("Android BLE write failed: {error}")))
+        .map_err(|error| {
+            CompanionError::android_ble_bridge(format!("Android BLE write failed: {error}"))
+        })
     })
 }
 
@@ -242,7 +265,9 @@ fn disconnect_blocking(session_id: i64) -> Result<()> {
             &[JValue::Long(session_id as jlong)],
         )
         .map(|_| ())
-        .map_err(|error| CompanionError::AndroidBleBridge(format!("Android BLE disconnect failed: {error}")))
+        .map_err(|error| {
+            CompanionError::android_ble_bridge(format!("Android BLE disconnect failed: {error}"))
+        })
     });
     notification_senders().lock().unwrap().remove(&session_id);
     result
@@ -252,17 +277,15 @@ fn with_bridge_env<T>(operation: impl FnOnce(&JNIEnv, &GlobalRef) -> Result<T>) 
     ensure_bridge_initialized()?;
 
     let vm = ANDROID_BLE_BRIDGE_VM.get().ok_or_else(|| {
-        CompanionError::AndroidBleBridge(
-            "Android BLE bridge did not capture the Java VM at startup".into(),
+        CompanionError::android_ble_bridge(
+            "Android BLE bridge did not capture the Java VM at startup",
         )
     })?;
     let bridge = ANDROID_BLE_BRIDGE.get().ok_or_else(|| {
-        CompanionError::AndroidBleBridge(
-            "Android BLE bridge instance is unavailable".into(),
-        )
+        CompanionError::android_ble_bridge("Android BLE bridge instance is unavailable")
     })?;
     let env = vm.attach_current_thread_permanently().map_err(|error| {
-        CompanionError::AndroidBleBridge(format!(
+        CompanionError::android_ble_bridge(format!(
             "failed to attach current thread to the Android JVM: {error}"
         ))
     })?;
@@ -273,9 +296,9 @@ fn with_bridge_env<T>(operation: impl FnOnce(&JNIEnv, &GlobalRef) -> Result<T>) 
 fn ensure_bridge_initialized() -> Result<()> {
     match ANDROID_BLE_BRIDGE_INIT_RESULT.get() {
         Some(Ok(())) => Ok(()),
-        Some(Err(message)) => Err(CompanionError::AndroidBleBridge(message.clone())),
-        None => Err(CompanionError::AndroidBleBridge(
-            "Android BLE bridge was not initialized during application startup".into(),
+        Some(Err(message)) => Err(CompanionError::android_ble_bridge(message.clone())),
+        None => Err(CompanionError::android_ble_bridge(
+            "Android BLE bridge was not initialized during application startup",
         )),
     }
 }
@@ -288,10 +311,14 @@ fn parse_json_string<T: for<'de> Deserialize<'de>>(
     let value: JString = value.into();
     let value: String = env
         .get_string(value)
-        .map_err(|error| CompanionError::AndroidBleBridge(format!("failed to read Android BLE {what}: {error}")))?
+        .map_err(|error| {
+            CompanionError::android_ble_bridge(format!(
+                "failed to read Android BLE {what}: {error}"
+            ))
+        })?
         .into();
     serde_json::from_str(&value).map_err(|error| {
-        CompanionError::AndroidBleBridge(format!("failed to parse Android BLE {what}: {error}"))
+        CompanionError::android_ble_bridge(format!("failed to parse Android BLE {what}: {error}"))
     })
 }
 

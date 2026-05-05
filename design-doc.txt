@@ -1,0 +1,167 @@
+Jukeboy Companion: Frontend Design Guidelines
+
+1. Design Philosophy
+
+The Jukeboy Companion app bridges the gap between tactile physical hardware and digital control. The aesthetic is Exaggerated Monotone Material. It takes the core principles of Material Design (elevation, clear hierarchy, responsive interactions) but distorts them for a modern, almost brutalist, and highly accessible interface.
+
+Key Characteristics
+
+Monotone Palette: We rely entirely on a single-hue grayscale scale (from stark white to deep obsidian). Contrast is achieved through lightness and darkness, not color.
+
+Exaggerated Proportions: UI elements are oversized. Typography is massive and tracks tightly. Corner radii are pushed to their limits (e.g., completely pill-shaped buttons, heavily rounded cards).
+
+Tactile Material: Heavy, distinct drop shadows (or flat, hard offset shadows) that make elements feel like physical buttons on the Jukeboy hardware.
+
+Unified Codebase: Built on Vue 3 + Vuetify 3, utilizing responsive layouts to serve both the Tauri Desktop build and mobile form factors from the exact same components.
+
+2. Global Foundations (Vuetify Configuration)
+
+Colors (The Monotone Scale)
+
+Configure the Vuetify theme to override the default colors.
+
+background: #121212 (Obsidian)
+
+surface: #1E1E1E (Dark Slate)
+
+surface-variant: #2C2C2C (Graphite)
+
+primary: #FFFFFF (Stark White - used for active states and primary buttons)
+
+on-primary: #000000 (Pitch Black)
+
+text-high-emphasis: #FFFFFF
+
+text-medium-emphasis: #A0A0A0
+
+Typography (Exaggerated)
+
+Font Family: A geometric sans-serif like Space Grotesk or Inter.
+
+Display/Headers: Oversized, tightly kerned. (e.g., Vuetify text-h2 modified to be font-weight: 800; letter-spacing: -0.05em; line-height: 1.1;).
+
+Body: Clean, legible, medium weight.
+
+Shape & Spacing
+
+Corner Radius (rounded): Base radius is 24px for cards (v-card), and 999px (pill) for buttons (v-btn).
+
+Spacing: Double standard Material spacing. Use generous padding (e.g., pa-6, ma-4) to let the oversized elements breathe.
+
+3. Universal Layout Architecture
+
+The app uses a responsive shell that adapts based on the Vuetify display breakpoints (smAndDown vs mdAndUp).
+
+Mobile (Phones/Small Tablets):
+
+v-app-bar: Minimal top bar showing only connection status (a white dot) and battery.
+
+v-main: Scrollable content area.
+
+v-bottom-navigation: 4 oversized, monochromatic icons. Active state is indicated by a stark white background pill behind the icon.
+
+Desktop (PC/Mac via Tauri):
+
+v-navigation-drawer: The bottom navigation morphs into a permanent left-hand sidebar.
+
+v-main: Expanded content area. Cards use a maximum width (max-width: 800px) to prevent them from stretching awkwardly on ultra-wide monitors.
+
+4. View Specifications
+
+View 1: Dashboard (Now Playing)
+
+The default view. Highly visual, focused on the immediate listening experience.
+
+Hero Section:
+
+A massive v-img displaying the album art. On mobile, this takes up the top 45% of the screen. Apply a subtle monochromatic filter (grayscale 100% or high contrast) to the image if you want to strictly enforce the monotone rule, or let the album art be the only color in the app.
+
+Track Info:
+
+text-h3 (Exaggerated) for Track Name.
+
+text-h6 (Medium emphasis) for Artist/Album.
+
+Transport Controls (companion_playback_control):
+
+Seek Bar: An oversized v-slider with a thick track (thumb-size="32", track-size="8").
+
+Buttons: A central row. The "Play/Pause" button is a massive v-btn (fab, variant="elevated", size="x-large"). Prev/Next are slightly smaller.
+
+Toggles Row:
+
+Two pill-shaped v-btn-toggle groups: One for Output (I2S / Bluetooth), one for Mode (Seq / Shuffle / Repeat).
+
+View 2: Library (Cartridge Explorer)
+
+The digital reflection of the currently inserted physical media.
+
+Header:
+
+A stark v-sheet or v-card displaying the currently mounted Album details (companion_library_album).
+
+Track List (companion_library_tracks):
+
+A v-list with lines="two".
+
+Each v-list-item should be distinct, perhaps with a slight background color on hover.
+
+Instead of standard list text, use exaggerated font sizes for the track numbers (e.g., a massive "01", "02" leading the list item).
+
+Tapping an item triggers the play_index command.
+
+History Section:
+
+A horizontal scrolling row (v-slide-group) of monochromatic album art squares representing recently played items (companion_history_albums).
+
+View 3: Connectivity
+
+Dead-simple network and Bluetooth management.
+
+Header: * "Network & Audio" in oversized typography.
+
+Wi-Fi Section (companion_wifi_*):
+
+A large "Scan Networks" button.
+
+A v-list displaying SSIDs.
+
+Connection Modal: When tapping a network, a v-dialog appears from the bottom (on mobile) or center (desktop). It contains a massive, high-contrast v-text-field for the password and a stark white "Connect" button.
+
+A massive v-switch for "Auto-reconnect".
+
+Bluetooth Section (companion_bt_*):
+
+A card displaying current BT audio status.
+
+Three oversized action buttons: "Connect Last", "Pair Best Candidate", "Disconnect".
+
+View 4: Settings & Trust
+
+Configuration and hardware integration.
+
+Last.fm Integration (companion_lastfm_control):
+
+A distinct v-card with an exaggerated v-switch to toggle scrobbling.
+
+Input fields (v-text-field with variant="solo") for credentials.
+
+Pairing & Trust (companion_trusted_list, companion_pair_begin):
+
+A list of trusted clients.
+
+A dramatic "Revoke" button (variant="outlined", color="error" - the only place a non-monotone color like deep red might be acceptable, or just use reversed stark white on black for emphasis).
+
+Hardware Info:
+
+A monolithic block of text showing firmware versions, connected App Name, and Client ID.
+
+A massive bottom button to "Disconnect Companion" (companion_disconnect).
+
+5. Interaction & Animation Rules
+
+Optimistic UI: Because BLE can have latency, UI elements must react instantly. When the user drags the volume v-slider, update the local Vue state instantly, then send the backend command.
+
+Frame Reactivity: Connect the existing companion://frame Tauri listener to a central Pinia store. If a frame indicates the track changed (via hardware button press), the Vue UI must instantly transition to the new track state.
+
+Transitions: Use Vuetify's built-in v-fade-transition or v-slide-x-transition between the 4 main views to make navigation feel fluid and app-like.
