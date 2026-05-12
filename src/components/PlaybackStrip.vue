@@ -73,7 +73,13 @@ const modeButtonColor = computed(() => (playback.value.playback_mode === "sequen
 
 const outputButtonIcon = computed(() => (playback.value.output_target === "bluetooth" ? "mdi-speaker-wireless" : "mdi-speaker"));
 
-const outputButtonColor = computed(() => (playback.value.output_target === "bluetooth" ? "primary" : "grey-lighten-1"));
+const bluetoothOutputAvailable = computed(() => store.snapshotState.bluetooth.a2dp_connected);
+
+const outputButtonColor = computed(() => {
+  return playback.value.output_target === "bluetooth" && bluetoothOutputAvailable.value
+    ? "primary"
+    : "grey-lighten-1";
+});
 
 watch(() => playback.value.position_sec, (value) => {
   if (!isSeeking.value) progressDraft.value = value ?? 0;
@@ -170,6 +176,10 @@ function cyclePlaybackMode() {
 }
 
 function setOutputTarget(outputTarget: OutputTarget) {
+  if (outputTarget === "bluetooth" && !bluetoothOutputAvailable.value) {
+    return;
+  }
+
   outputMenu.value = false;
   void store.setOutputTarget(outputTarget);
 }
@@ -180,14 +190,13 @@ function setOutputTarget(outputTarget: OutputTarget) {
     <!-- Left: Track Info -->
     <div class="strip-left">
       <ArtworkCover
-        v-if="playback.track_title || album.name"
         :title="album.name || playback.track_title || 'Mounted cartridge'"
         :subtitle="album.artist || playback.track_artist || 'Jukeboy Companion'"
-        :seed="`${store.snapshotState.cartridge.checksum ?? 'jukeboy'}-${album.name}`"
+        :src="album.artwork_data_url"
         :height="56"
+        :radius="8"
         class="strip-artwork"
       />
-      <div v-else class="placeholder-art" />
       <div class="strip-meta">
         <div
           ref="titleLineRef"
@@ -294,8 +303,9 @@ function setOutputTarget(outputTarget: OutputTarget) {
                   </v-btn>
                   <v-btn
                     block
-                    :variant="playback.output_target === 'bluetooth' ? 'flat' : 'outlined'"
-                    :color="playback.output_target === 'bluetooth' ? 'primary' : undefined"
+                    :variant="bluetoothOutputAvailable && playback.output_target === 'bluetooth' ? 'flat' : 'outlined'"
+                    :color="bluetoothOutputAvailable && playback.output_target === 'bluetooth' ? 'primary' : undefined"
+                    :disabled="!bluetoothOutputAvailable"
                     data-testid="strip-output-bluetooth"
                     @click="setOutputTarget('bluetooth')"
                   >
@@ -399,8 +409,9 @@ function setOutputTarget(outputTarget: OutputTarget) {
             </v-btn>
             <v-btn
               block
-              :variant="playback.output_target === 'bluetooth' ? 'flat' : 'outlined'"
-              :color="playback.output_target === 'bluetooth' ? 'primary' : undefined"
+              :variant="bluetoothOutputAvailable && playback.output_target === 'bluetooth' ? 'flat' : 'outlined'"
+              :color="bluetoothOutputAvailable && playback.output_target === 'bluetooth' ? 'primary' : undefined"
+              :disabled="!bluetoothOutputAvailable"
               data-testid="strip-output-bluetooth"
               @click="setOutputTarget('bluetooth')"
             >
@@ -436,8 +447,8 @@ function setOutputTarget(outputTarget: OutputTarget) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
-  height: 108px;
+  padding: 0 12px;
+  height: 88px;
   border-top: 1px solid rgba(255,255,255,0.1);
   box-sizing: border-box;
 }
@@ -447,22 +458,14 @@ function setOutputTarget(outputTarget: OutputTarget) {
   flex: 1;
   align-items: center;
   min-width: 0;
-  gap: 14px;
+  gap: 10px;
 }
 
 .strip-artwork {
   border-radius: 4px;
   overflow: hidden;
-  width: 56px;
-  height: 56px;
-  flex-shrink: 0;
-}
-
-.placeholder-art {
-  width: 56px;
-  height: 56px;
-  border-radius: 4px;
-  background-color: #282828;
+  width: 48px;
+  height: 48px;
   flex-shrink: 0;
 }
 
@@ -470,19 +473,19 @@ function setOutputTarget(outputTarget: OutputTarget) {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
   overflow: hidden;
 }
 
 .strip-title {
-  font-size: 0.875rem;
+  font-size: 0.82rem;
   font-weight: 500;
   color: white;
 }
 
 .strip-artist {
-  font-size: 0.6875rem;
+  font-size: 0.62rem;
   color: #b3b3b3;
 }
 
@@ -533,7 +536,7 @@ function setOutputTarget(outputTarget: OutputTarget) {
   align-items: center;
   justify-content: center;
   min-width: 0;
-  max-width: 722px;
+  max-width: 640px;
 }
 
 .strip-actions {
@@ -541,31 +544,31 @@ function setOutputTarget(outputTarget: OutputTarget) {
   grid-template-columns: auto auto auto;
   align-items: center;
   justify-content: center;
-  column-gap: 14px;
-  margin-bottom: 4px;
+  column-gap: 10px;
+  margin-bottom: 2px;
 }
 
 .transport-group {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 
 .action-btn {
-  width: 40px !important;
-  height: 40px !important;
-  min-width: 40px !important;
-  min-height: 40px !important;
-  flex: 0 0 40px;
+  width: 34px !important;
+  height: 34px !important;
+  min-width: 34px !important;
+  min-height: 34px !important;
+  flex: 0 0 34px;
 }
 
 .play-btn {
   background-color: white !important;
-  width: 56px !important;
-  height: 56px !important;
-  min-width: 56px !important;
-  min-height: 56px !important;
-  flex: 0 0 56px;
+  width: 46px !important;
+  height: 46px !important;
+  min-width: 46px !important;
+  min-height: 46px !important;
+  flex: 0 0 46px;
   border-radius: 50% !important;
   padding: 0 !important;
 }
@@ -579,13 +582,13 @@ function setOutputTarget(outputTarget: OutputTarget) {
   align-items: center;
   min-width: 0;
   width: 100%;
-  gap: 8px;
+  gap: 6px;
 }
 
 .time-text {
-  font-size: 0.6875rem;
+  font-size: 0.62rem;
   color: #a7a7a7;
-  min-width: 40px;
+  min-width: 36px;
   text-align: center;
 }
 
@@ -608,12 +611,12 @@ function setOutputTarget(outputTarget: OutputTarget) {
   flex: 1;
   justify-content: flex-end;
   align-items: center;
-  gap: 8px;
-  max-width: 250px;
+  gap: 6px;
+  max-width: 210px;
 }
 
 .volume-slider {
-  max-width: 100px;
+  max-width: 88px;
 }
 
 .volume-trigger {
@@ -695,11 +698,11 @@ function setOutputTarget(outputTarget: OutputTarget) {
       "progress progress";
     align-items: center;
     justify-content: stretch;
-    padding: 8px 10px 14px;
-    min-height: 114px;
+    padding: 6px 8px 10px;
+    min-height: 96px;
     height: auto;
-    column-gap: 10px;
-    row-gap: 6px;
+    column-gap: 8px;
+    row-gap: 4px;
   }
 
   .strip-left {
@@ -707,13 +710,12 @@ function setOutputTarget(outputTarget: OutputTarget) {
     flex: none;
     width: auto;
     min-width: 0;
-    gap: 8px;
+    gap: 6px;
   }
 
-  .strip-artwork,
-  .placeholder-art {
-    width: 40px;
-    height: 40px;
+  .strip-artwork {
+    width: 36px;
+    height: 36px;
   }
 
   .strip-meta {
@@ -722,13 +724,13 @@ function setOutputTarget(outputTarget: OutputTarget) {
   }
 
   .strip-title {
-    font-size: 0.72rem;
+    font-size: 0.68rem;
     line-height: 1.05;
   }
 
   .strip-artist {
     display: block;
-    font-size: 0.54rem;
+    font-size: 0.5rem;
     line-height: 1.05;
   }
 
@@ -740,14 +742,14 @@ function setOutputTarget(outputTarget: OutputTarget) {
     grid-area: controls;
     width: auto;
     grid-template-columns: auto auto auto;
-    column-gap: 4px;
+    column-gap: 3px;
     margin-bottom: 0;
     justify-self: end;
     align-self: center;
   }
 
   .transport-group {
-    gap: 4px;
+    gap: 3px;
   }
 
   .transport-group--left {
@@ -759,6 +761,14 @@ function setOutputTarget(outputTarget: OutputTarget) {
   }
 
   .action-btn {
+    width: 28px !important;
+    height: 28px !important;
+    min-width: 28px !important;
+    min-height: 28px !important;
+    flex-basis: 28px;
+  }
+
+  .play-btn {
     width: 32px !important;
     height: 32px !important;
     min-width: 32px !important;
@@ -766,32 +776,24 @@ function setOutputTarget(outputTarget: OutputTarget) {
     flex-basis: 32px;
   }
 
-  .play-btn {
-    width: 34px !important;
-    height: 34px !important;
-    min-width: 34px !important;
-    min-height: 34px !important;
-    flex-basis: 34px;
-  }
-
   .time-text {
-    min-width: 28px;
-    font-size: 0.58rem;
+    min-width: 24px;
+    font-size: 0.54rem;
   }
 
   .strip-progress {
     grid-area: progress;
     width: 100%;
-    gap: 4px;
+    gap: 3px;
     padding-inline: 0;
   }
 
   .volume-trigger {
-    width: 32px !important;
-    height: 32px !important;
-    min-width: 32px !important;
-    min-height: 32px !important;
-    flex-basis: 32px;
+    width: 28px !important;
+    height: 28px !important;
+    min-width: 28px !important;
+    min-height: 28px !important;
+    flex-basis: 28px;
   }
 }
 </style>

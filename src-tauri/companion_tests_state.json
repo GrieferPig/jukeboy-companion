@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "default": {
+      "client_id": "f90702ba-9853-4ee7-87f8-bfce0461fcce",
+      "app_name": "jukeboy-companion-tests",
+      "secret_hex": "b40edefb4e20a13ebcca7a3d75be5a4141434db447ee550b52c76ba5cd2e627b"
+    }
+  }
+}

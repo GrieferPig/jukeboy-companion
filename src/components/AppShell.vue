@@ -4,13 +4,14 @@ import { storeToRefs } from "pinia";
 import { RouterView, useRoute, useRouter } from "vue-router";
 
 import { useCompanionStore } from "../stores/companion";
+import ConnectionGateDialog from "./ConnectionGateDialog.vue";
 import PlaybackStrip from "./PlaybackStrip.vue";
 
 const route = useRoute();
 const router = useRouter();
 const store = useCompanionStore();
-const { activeIssue, statusLabel } = storeToRefs(store);
-const topbarStatusLabel = computed(() => statusLabel.value.replace(/\s*·\s*live sync active$/i, ""));
+const { notifications, statusLabel } = storeToRefs(store);
+const topbarStatusLabel = computed(() => statusLabel.value);
 
 const statusClass = computed(() => (store.connection.connected ? "is-active" : "is-idle"));
 
@@ -29,7 +30,7 @@ function toggleView() {
 
 <template>
   <v-app class="jukeboy-app">
-    <v-app-bar class="shell-app-bar" elevation="0" color="transparent" height="101">
+    <v-app-bar class="shell-app-bar" elevation="0" color="transparent" height="92">
       <div class="view-frame flex-1-1-100 topbar-frame">
         <div class="brand-lockup">
           <span class="status-dot" :class="statusClass" />
@@ -40,6 +41,7 @@ function toggleView() {
         </div>
 
         <v-btn
+          v-if="store.isConnected"
           color="primary"
           variant="text"
           size="large"
@@ -55,27 +57,32 @@ function toggleView() {
 
     <v-main class="shell-main">
       <div class="view-frame">
-        <v-slide-y-transition>
+        <div v-if="notifications.length" class="shell-notification-stack" data-testid="shell-notification-stack">
           <v-alert
-            v-if="activeIssue"
-            type="warning"
+            v-for="notification in notifications"
+            :key="notification.id"
+            :type="notification.level === 'recovery' ? 'success' : 'warning'"
             variant="tonal"
-            color="surface-variant"
+            :color="notification.level === 'recovery' ? 'primary' : 'surface-variant'"
             closable
-            class="shell-issue-banner companion-alert"
-            @click:close="store.dismissIssue()"
+            class="shell-notification companion-alert"
+            :data-testid="`shell-notification-${notification.level}`"
+            @click:close="store.dismissNotification(notification.id)"
           >
             <template #title>
-              {{ activeIssue.title }}
+              <div class="shell-notification__title-row">
+                <span>{{ notification.title }}</span>
+                <span class="shell-notification__time">{{ notification.time }}</span>
+              </div>
             </template>
-            <div>{{ activeIssue.detail }}</div>
-            <div v-if="activeIssue.recovery" class="shell-issue-banner__recovery">
-              {{ activeIssue.recovery }}
+            <div>{{ notification.detail }}</div>
+            <div v-if="notification.recovery" class="shell-notification__recovery">
+              {{ notification.recovery }}
             </div>
           </v-alert>
-        </v-slide-y-transition>
+        </div>
 
-        <RouterView v-slot="{ Component, route: current }">
+        <RouterView v-if="store.isConnected" v-slot="{ Component, route: current }">
           <v-fade-transition mode="out-in">
             <component :is="Component" :key="current.fullPath" />
           </v-fade-transition>
@@ -83,7 +90,8 @@ function toggleView() {
       </div>
     </v-main>
 
-    <PlaybackStrip />
+    <PlaybackStrip v-if="store.isConnected" />
+    <ConnectionGateDialog />
   </v-app>
 </template>
 
@@ -136,12 +144,15 @@ function toggleView() {
   align-items: center;
   position: relative;
   z-index: 1;
-  min-height: 101px;
+  min-height: 92px;
+  gap: 1rem;
+  padding-top: 0.45rem;
+  padding-bottom: 0.1rem;
 }
 
 :deep(.shell-app-bar .v-toolbar__content) {
-  min-height: 101px !important;
-  height: 101px !important;
+  min-height: 92px !important;
+  height: 92px !important;
   padding-top: 0;
   padding-bottom: 0;
 }
@@ -158,7 +169,7 @@ function toggleView() {
 }
 
 .brand-title {
-  font-size: 1.2rem;
+  font-size: 1.08rem;
   font-weight: 800;
   letter-spacing: -0.04em;
   margin: 0;
@@ -166,7 +177,7 @@ function toggleView() {
 }
 
 .status-text {
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   color: rgba(255, 255, 255, 0.6);
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -174,22 +185,44 @@ function toggleView() {
 
 .toggle-button {
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
+  padding-inline: 0.8rem !important;
 }
 
-.shell-issue-banner {
-  margin-bottom: 1rem;
+.shell-notification-stack {
+  display: grid;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.shell-notification {
+  margin-bottom: 0;
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.shell-issue-banner__recovery {
+.shell-notification__title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.shell-notification__time {
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.shell-notification__recovery {
   margin-top: 0.45rem;
   color: rgba(255, 255, 255, 0.88);
 }
 
 @media (max-width: 720px) {
   .shell-app-bar {
-    height: 122px !important;
+    height: 106px !important;
   }
 
   .shell-app-bar::before {
@@ -197,15 +230,15 @@ function toggleView() {
   }
 
   .topbar-frame {
-    min-height: 122px;
-    padding-top: calc(env(safe-area-inset-top) + 0.95rem);
-    padding-bottom: 0.55rem;
+    min-height: 106px;
+    padding-top: calc(env(safe-area-inset-top) + 0.65rem);
+    padding-bottom: 0.4rem;
     align-items: flex-start;
   }
 
   :deep(.shell-app-bar .v-toolbar__content) {
-    min-height: 122px !important;
-    height: 122px !important;
+    min-height: 106px !important;
+    height: 106px !important;
     align-items: flex-start;
   }
 
@@ -218,18 +251,18 @@ function toggleView() {
   }
 
   .brand-title {
-    font-size: 1.08rem;
+    font-size: 0.98rem;
   }
 
   .status-text {
-    font-size: 0.68rem;
+    font-size: 0.62rem;
   }
 
   .toggle-button {
     align-self: flex-start;
     min-width: 0;
-    margin-top: 0.2rem;
-    padding-inline: 0.25rem !important;
+    margin-top: 0.15rem;
+    padding-inline: 0.2rem !important;
   }
 }
 </style>

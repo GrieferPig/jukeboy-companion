@@ -16,7 +16,7 @@ use jni019::{
 use serde::Deserialize;
 use tokio::{sync::mpsc, task};
 
-use crate::companion::{
+use crate::{
     error::{CompanionError, Result},
     protocol::{notify_uuid, service_uuid, write_uuid, DiscoveredDevice},
 };
@@ -56,7 +56,7 @@ fn notification_senders() -> &'static Mutex<HashMap<i64, mpsc::UnboundedSender<V
     ANDROID_BLE_NOTIFICATION_SENDERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub(crate) fn init(env: &JNIEnv, activity: jobject) -> std::result::Result<(), String> {
+pub fn init(env: &JNIEnv, activity: jobject) -> std::result::Result<(), String> {
     if let Some(result) = ANDROID_BLE_BRIDGE_INIT_RESULT.get() {
         return result.clone();
     }

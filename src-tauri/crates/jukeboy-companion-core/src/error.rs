@@ -15,6 +15,7 @@ fn classify_transport_message(message: &str) -> Option<TransportFailureKind> {
         || normalized.contains("notification stream ended")
         || normalized.contains("ble device is not connected")
         || normalized.contains("ble device disconnected")
+        || normalized.contains("device is not ready for use")
         || normalized.contains("ble session is not connected")
         || normalized.contains("peripheral disconnected")
         || (normalized.contains("ble session") && normalized.contains("not available"))
@@ -124,6 +125,17 @@ mod tests {
     fn classifies_closed_transport_as_not_connected() {
         let message =
             "BTLE plug error: Error { code: HRESULT(0x80000013), message: \"The object has been closed.\" }";
+
+        assert_eq!(
+            classify_transport_message(message),
+            Some(TransportFailureKind::NotConnected)
+        );
+    }
+
+    #[test]
+    fn classifies_unready_peripheral_as_not_connected() {
+        let message =
+            "BTLE plug error: Error { code: HRESULT(0x800710DF), message: \"The device is not ready for use.\" }";
 
         assert_eq!(
             classify_transport_message(message),

@@ -1,10 +1,12 @@
 use serde_json::Value;
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::companion::{
-    AppState, AuthRequest, BtControlRequest, ConnectRequest, ConnectionStatus,
-    LastfmControlRequest, PageRequest, PairBeginRequest, PingRequest, PlaybackControlRequest,
-    ScanRequest, ToggleRequest, TrustedRevokeRequest, WifiConnectRequest, WifiConnectSlotRequest,
+    AppState, AuthRequest, BtControlRequest, BtUnbondRequest, ConnectRequest, ConnectionStatus,
+    HidLedSetRequest, HistoryTrackPageRequest, LastfmControlRequest, OutputSelectRequest,
+    PageRequest, PairBeginRequest, PingRequest, PlaybackControlRequest, ScanRequest,
+    ScriptLogRequest, ScriptNameRequest, ScriptRunRequest, ToggleRequest, TrustedRevokeRequest,
+    WifiConnectRequest, WifiConnectSlotRequest, WifiSaveSlotRequest,
 };
 
 type CommandResult<T> = std::result::Result<T, String>;
@@ -23,13 +25,12 @@ pub async fn companion_scan(
 
 #[tauri::command]
 pub async fn companion_connect(
-    app: AppHandle,
     state: State<'_, AppState>,
     request: ConnectRequest,
 ) -> CommandResult<ConnectionStatus> {
     state
         .manager()
-        .connect(&app, request)
+        .connect(request)
         .await
         .map_err(|error| error.to_string())
 }
@@ -332,6 +333,213 @@ pub async fn companion_bt_control(
     state
         .manager()
         .bt_audio_control(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_output_status(state: State<'_, AppState>) -> CommandResult<Value> {
+    state
+        .manager()
+        .output_status()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_output_select(
+    state: State<'_, AppState>,
+    request: OutputSelectRequest,
+) -> CommandResult<Value> {
+    state
+        .manager()
+        .output_select(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_wifi_list_slots(state: State<'_, AppState>) -> CommandResult<Value> {
+    state
+        .manager()
+        .wifi_list_slots()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_wifi_save_slot(
+    state: State<'_, AppState>,
+    request: WifiSaveSlotRequest,
+) -> CommandResult<Value> {
+    state
+        .manager()
+        .wifi_save_slot(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_wifi_reconnect(state: State<'_, AppState>) -> CommandResult<Value> {
+    state
+        .manager()
+        .wifi_reconnect()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_lastfm_request_token(state: State<'_, AppState>) -> CommandResult<Value> {
+    state
+        .manager()
+        .lastfm_request_token()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_history_tracks(
+    state: State<'_, AppState>,
+    request: Option<HistoryTrackPageRequest>,
+) -> CommandResult<Value> {
+    state
+        .manager()
+        .history_track_page(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_history_clear(state: State<'_, AppState>) -> CommandResult<Value> {
+    state
+        .manager()
+        .history_clear()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_bt_scan_start(state: State<'_, AppState>) -> CommandResult<Value> {
+    state
+        .manager()
+        .bt_scan_start()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_bt_scan_results(
+    state: State<'_, AppState>,
+    request: Option<PageRequest>,
+) -> CommandResult<Value> {
+    state
+        .manager()
+        .bt_scan_results(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_bt_bonded_list(state: State<'_, AppState>) -> CommandResult<Value> {
+    state
+        .manager()
+        .bt_bonded_list()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_bt_unbond(
+    state: State<'_, AppState>,
+    request: BtUnbondRequest,
+) -> CommandResult<Value> {
+    state
+        .manager()
+        .bt_unbond(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_hid_status(state: State<'_, AppState>) -> CommandResult<Value> {
+    state
+        .manager()
+        .hid_status()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_hid_led_set(
+    state: State<'_, AppState>,
+    request: HidLedSetRequest,
+) -> CommandResult<Value> {
+    state
+        .manager()
+        .hid_led_set(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_script_status(state: State<'_, AppState>) -> CommandResult<Value> {
+    state
+        .manager()
+        .script_status()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_script_list(
+    state: State<'_, AppState>,
+    request: Option<ScriptNameRequest>,
+) -> CommandResult<Value> {
+    state
+        .manager()
+        .script_list(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_script_log(
+    state: State<'_, AppState>,
+    request: Option<ScriptLogRequest>,
+) -> CommandResult<Value> {
+    state
+        .manager()
+        .script_log(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_script_run(
+    state: State<'_, AppState>,
+    request: ScriptRunRequest,
+) -> CommandResult<Value> {
+    state
+        .manager()
+        .script_run(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_system_reboot(state: State<'_, AppState>) -> CommandResult<Value> {
+    state
+        .manager()
+        .system_reboot()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn companion_system_reboot_download(state: State<'_, AppState>) -> CommandResult<Value> {
+    state
+        .manager()
+        .system_reboot_download()
         .await
         .map_err(|error| error.to_string())
 }

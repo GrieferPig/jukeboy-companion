@@ -1,49 +1,43 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
-use tokio::{sync::Mutex, task::JoinHandle, time::timeout};
+use tokio::{
+    sync::{broadcast, Mutex},
+    task::JoinHandle,
+    time::timeout,
+};
 
-use crate::companion::{
+use crate::{
     client::CompanionBleClient,
     error::{CompanionError, Result},
     mock::{mock_mode_enabled, request_selects_mock, MockCompanionBackend},
     protocol::{
-        bt_action_from_request, default_scan_timeout, default_timeout,
+        bt_action_from_request, button_id_to_name, default_scan_timeout, default_timeout,
         generate_pairing_credentials, lastfm_action_from_request, output_target_to_id,
-        parse_button_sequence, playback_action_from_request, playback_mode_to_id,
-        CompanionCredentials, ConnectedDevice, AUTH_NONCE_LEN, EVENT_NAME,
+        parse_button_sequence, playback_action_from_request, playback_mode_to_id, tlv_string,
+        tlv_u32, tlv_u8, BtAction, CompanionCredentials, ConnectedDevice, DiscoveredDevice,
+        LastfmAction, Opcode, PlaybackAction, TlvType, AUTH_NONCE_LEN,
     },
     storage::CredentialStore,
 };
 
-pub struct AppState {
-    manager: CompanionManager,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            manager: CompanionManager::default(),
-        }
-    }
-}
-
-impl AppState {
-    pub fn manager(&self) -> &CompanionManager {
-        &self.manager
-    }
-}
-
-#[derive(Default)]
 pub struct CompanionManager {
     command_queue: Mutex<()>,
     session: Mutex<Option<CompanionSession>>,
+    credential_store: CredentialStore,
+    event_tx: broadcast::Sender<Value>,
 }
 
 struct CompanionSession {
     backend: CompanionBackend,
+    connected: Arc<AtomicBool>,
     profile: String,
     credential_profiles: Vec<String>,
     credential_override: Option<CompanionCredentials>,
@@ -64,7 +58,7 @@ impl CompanionBackend {
         }
     }
 
-    fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<Value> {
+    fn subscribe_events(&self) -> broadcast::Receiver<Value> {
         match self {
             Self::Ble(client) => client.subscribe_events(),
             Self::Mock(client) => client.subscribe_events(),
@@ -176,11 +170,7 @@ impl CompanionBackend {
         }
     }
 
-    async fn playback_control(
-        &self,
-        action: crate::companion::protocol::PlaybackAction,
-        value: Option<u32>,
-    ) -> Result<Value> {
+    async fn playback_control(&self, action: PlaybackAction, value: Option<u32>) -> Result<Value> {
         match self {
             Self::Ble(client) => client.playback_control(action, value).await,
             Self::Mock(client) => client.playback_control(action, value).await,
@@ -259,7 +249,7 @@ impl CompanionBackend {
 
     async fn lastfm_control(
         &self,
-        action: crate::companion::protocol::LastfmAction,
+        action: LastfmAction,
         auth_url: Option<&str>,
         username: Option<&str>,
         password: Option<&str>,
@@ -300,14 +290,24 @@ impl CompanionBackend {
         }
     }
 
-    async fn bt_audio_control(
-        &self,
-        action: crate::companion::protocol::BtAction,
-    ) -> Result<Value> {
+    async fn bt_audio_control(&self, action: BtAction) -> Result<Value> {
         match self {
             Self::Ble(client) => client.bt_audio_control(action).await,
             Self::Mock(client) => client.bt_audio_control(action).await,
         }
+    }
+
+    async fn advanced_request(&self, opcode: Opcode, payload: Vec<u8>) -> Result<Value> {
+        match self {
+            Self::Ble(client) => client.decoded_raw_request(opcode, payload).await,
+            Self::Mock(client) => client.advanced_request(opcode, payload).await,
+        }
+    }
+}
+
+impl Default for CompanionManager {
+    fn default() -> Self {
+        Self::new(CredentialStore::default())
     }
 }
 
@@ -399,6 +399,58 @@ pub struct BtControlRequest {
     pub action: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct OutputSelectRequest {
+    pub output_target: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WifiSaveSlotRequest {
+    pub slot: u32,
+    pub ssid: String,
+    pub password: Option<String>,
+    pub preferred: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HistoryTrackPageRequest {
+    pub checksum: Option<u32>,
+    pub offset: Option<u32>,
+    pub count: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BtUnbondRequest {
+    pub address: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HidLedSetRequest {
+    pub r: Option<u8>,
+    pub g: Option<u8>,
+    pub b: Option<u8>,
+    pub brightness: Option<u8>,
+    pub off: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ScriptNameRequest {
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ScriptRunRequest {
+    pub name: String,
+    pub args: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ScriptLogRequest {
+    pub name: Option<String>,
+    pub offset: Option<u32>,
+    pub count: Option<u32>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ConnectionStatus {
     pub connected: bool,
@@ -406,10 +458,25 @@ pub struct ConnectionStatus {
 }
 
 impl CompanionManager {
-    pub async fn scan(
-        &self,
-        request: Option<ScanRequest>,
-    ) -> Result<Vec<crate::companion::protocol::DiscoveredDevice>> {
+    pub fn new(credential_store: CredentialStore) -> Self {
+        let (event_tx, _) = broadcast::channel(64);
+        Self {
+            command_queue: Mutex::new(()),
+            session: Mutex::new(None),
+            credential_store,
+            event_tx,
+        }
+    }
+
+    pub fn credential_store(&self) -> &CredentialStore {
+        &self.credential_store
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<Value> {
+        self.event_tx.subscribe()
+    }
+
+    pub async fn scan(&self, request: Option<ScanRequest>) -> Result<Vec<DiscoveredDevice>> {
         let _command_guard = self.command_queue.lock().await;
 
         if mock_mode_enabled() {
@@ -423,11 +490,7 @@ impl CompanionManager {
         CompanionBleClient::scan(timeout_duration).await
     }
 
-    pub async fn connect(
-        &self,
-        app: &AppHandle,
-        request: ConnectRequest,
-    ) -> Result<ConnectionStatus> {
+    pub async fn connect(&self, request: ConnectRequest) -> Result<ConnectionStatus> {
         let _command_guard = self.command_queue.lock().await;
 
         let requested_profile = resolve_profile(
@@ -435,7 +498,7 @@ impl CompanionManager {
             request.address.as_deref(),
             request.name.as_deref(),
         );
-        let store = CredentialStore::for_app(app)?;
+        let store = self.credential_store.clone();
         let credential_override =
             explicit_credentials(request.client_id, request.app_name, request.secret_hex)?;
         let backend = if request_selects_mock(
@@ -464,15 +527,23 @@ impl CompanionManager {
         };
 
         let mut event_rx = backend.subscribe_events();
-        let event_app = app.clone();
+        let event_tx = self.event_tx.clone();
+        let connected = Arc::new(AtomicBool::new(true));
+        let event_connected = Arc::clone(&connected);
         let event_task = tokio::spawn(async move {
             loop {
                 match event_rx.recv().await {
                     Ok(event) => {
-                        let _ = event_app.emit(EVENT_NAME, event);
+                        if is_disconnected_event(&event) {
+                            event_connected.store(false, Ordering::SeqCst);
+                        }
+                        let _ = event_tx.send(event);
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        event_connected.store(false, Ordering::SeqCst);
+                        break;
+                    }
                 }
             }
         });
@@ -490,6 +561,7 @@ impl CompanionManager {
             .unwrap_or_else(|| requested_profile.clone());
         let session = CompanionSession {
             backend,
+            connected,
             profile,
             credential_profiles,
             credential_override,
@@ -527,11 +599,15 @@ impl CompanionManager {
         let _command_guard = self.command_queue.lock().await;
         let guard = self.session.lock().await;
         Ok(match guard.as_ref() {
-            Some(session) => ConnectionStatus {
+            Some(session) if session.connected.load(Ordering::SeqCst) => ConnectionStatus {
                 connected: true,
                 device: Some(session.backend.connected_device().clone()),
             },
             None => ConnectionStatus {
+                connected: false,
+                device: None,
+            },
+            Some(_) => ConnectionStatus {
                 connected: false,
                 device: None,
             },
@@ -598,7 +674,7 @@ impl CompanionManager {
         });
         result["button_sequence"] = json!(sequence
             .iter()
-            .map(|value| crate::companion::protocol::button_id_to_name(*value))
+            .map(|value| button_id_to_name(*value))
             .collect::<Vec<_>>());
 
         if request.wait.unwrap_or(true) {
@@ -691,25 +767,23 @@ impl CompanionManager {
 
         let action = playback_action_from_request(&request.action)?;
         let value = match action {
-            crate::companion::protocol::PlaybackAction::SetMode => Some(playback_mode_to_id(
+            PlaybackAction::SetMode => Some(playback_mode_to_id(
                 request
                     .mode
                     .as_deref()
                     .ok_or_else(|| CompanionError::UnknownPlaybackMode(String::new()))?,
             )? as u32),
-            crate::companion::protocol::PlaybackAction::SetOutputTarget => {
-                Some(output_target_to_id(
-                    request
-                        .output_target
-                        .as_deref()
-                        .ok_or_else(|| CompanionError::UnknownOutputTarget(String::new()))?,
-                )? as u32)
-            }
-            crate::companion::protocol::PlaybackAction::Next
-            | crate::companion::protocol::PlaybackAction::Previous
-            | crate::companion::protocol::PlaybackAction::PauseToggle
-            | crate::companion::protocol::PlaybackAction::FastForward
-            | crate::companion::protocol::PlaybackAction::Rewind => None,
+            PlaybackAction::SetOutputTarget => Some(output_target_to_id(
+                request
+                    .output_target
+                    .as_deref()
+                    .ok_or_else(|| CompanionError::UnknownOutputTarget(String::new()))?,
+            )? as u32),
+            PlaybackAction::Next
+            | PlaybackAction::Previous
+            | PlaybackAction::PauseToggle
+            | PlaybackAction::FastForward
+            | PlaybackAction::Rewind => None,
             _ => request.value,
         };
         session.backend.playback_control(action, value).await
@@ -871,6 +945,203 @@ impl CompanionManager {
             .bt_audio_control(bt_action_from_request(&request.action)?)
             .await
     }
+
+    pub async fn output_status(&self) -> Result<Value> {
+        self.advanced_authenticated_request(Opcode::OutputStatus, Vec::new())
+            .await
+    }
+
+    pub async fn output_select(&self, request: OutputSelectRequest) -> Result<Value> {
+        self.advanced_authenticated_request(
+            Opcode::OutputSelect,
+            tlv_u8(
+                TlvType::OutputTarget as u16,
+                output_target_to_id(&request.output_target)?,
+            ),
+        )
+        .await
+    }
+
+    pub async fn wifi_list_slots(&self) -> Result<Value> {
+        self.advanced_authenticated_request(Opcode::WifiListSlots, Vec::new())
+            .await
+    }
+
+    pub async fn wifi_save_slot(&self, request: WifiSaveSlotRequest) -> Result<Value> {
+        let mut payload = tlv_u32(TlvType::WifiSlot as u16, request.slot);
+        payload.extend(tlv_string(TlvType::WifiSsid as u16, &request.ssid));
+        payload.extend(tlv_string(
+            TlvType::WifiPassword as u16,
+            request.password.as_deref().unwrap_or_default(),
+        ));
+        if let Some(preferred) = request.preferred {
+            payload.extend(tlv_u8(
+                TlvType::WifiSlotPreferred as u16,
+                u8::from(preferred),
+            ));
+        }
+        self.advanced_authenticated_request(Opcode::WifiSaveSlot, payload)
+            .await
+    }
+
+    pub async fn wifi_reconnect(&self) -> Result<Value> {
+        self.advanced_authenticated_request(Opcode::WifiReconnect, Vec::new())
+            .await
+    }
+
+    pub async fn lastfm_request_token(&self) -> Result<Value> {
+        self.advanced_authenticated_request(Opcode::LastfmRequestToken, Vec::new())
+            .await
+    }
+
+    pub async fn history_track_page(
+        &self,
+        request: Option<HistoryTrackPageRequest>,
+    ) -> Result<Value> {
+        let request = request.unwrap_or(HistoryTrackPageRequest {
+            checksum: None,
+            offset: Some(0),
+            count: Some(8),
+        });
+        let mut payload = [
+            tlv_u32(TlvType::Offset as u16, request.offset.unwrap_or(0)),
+            tlv_u32(TlvType::Count as u16, request.count.unwrap_or(8)),
+        ]
+        .concat();
+        if let Some(checksum) = request.checksum {
+            payload.extend(tlv_u32(TlvType::CartridgeChecksum as u16, checksum));
+        }
+        self.advanced_authenticated_request(Opcode::HistoryTrackPage, payload)
+            .await
+    }
+
+    pub async fn history_clear(&self) -> Result<Value> {
+        self.advanced_authenticated_request(Opcode::HistoryClear, Vec::new())
+            .await
+    }
+
+    pub async fn bt_scan_start(&self) -> Result<Value> {
+        self.advanced_authenticated_request(Opcode::BtScanStart, Vec::new())
+            .await
+    }
+
+    pub async fn bt_scan_results(&self, request: Option<PageRequest>) -> Result<Value> {
+        let request = request.unwrap_or(PageRequest {
+            offset: Some(0),
+            count: Some(8),
+        });
+        self.advanced_authenticated_request(
+            Opcode::BtScanResults,
+            [
+                tlv_u32(TlvType::Offset as u16, request.offset.unwrap_or(0)),
+                tlv_u32(TlvType::Count as u16, request.count.unwrap_or(8)),
+            ]
+            .concat(),
+        )
+        .await
+    }
+
+    pub async fn bt_bonded_list(&self) -> Result<Value> {
+        self.advanced_authenticated_request(Opcode::BtBondedList, Vec::new())
+            .await
+    }
+
+    pub async fn bt_unbond(&self, request: BtUnbondRequest) -> Result<Value> {
+        self.advanced_authenticated_request(
+            Opcode::BtUnbond,
+            tlv_string(TlvType::BtAddr as u16, &request.address),
+        )
+        .await
+    }
+
+    pub async fn hid_status(&self) -> Result<Value> {
+        self.advanced_authenticated_request(Opcode::HidStatus, Vec::new())
+            .await
+    }
+
+    pub async fn hid_led_set(&self, request: HidLedSetRequest) -> Result<Value> {
+        let mut payload = Vec::new();
+        if let Some(red) = request.r {
+            payload.extend(tlv_u8(TlvType::HidLedR as u16, red));
+        }
+        if let Some(green) = request.g {
+            payload.extend(tlv_u8(TlvType::HidLedG as u16, green));
+        }
+        if let Some(blue) = request.b {
+            payload.extend(tlv_u8(TlvType::HidLedB as u16, blue));
+        }
+        if let Some(brightness) = request.brightness {
+            payload.extend(tlv_u8(TlvType::HidLedBrightness as u16, brightness));
+        }
+        if request.off.unwrap_or(false) {
+            payload.extend(tlv_u8(TlvType::HidLedOff as u16, 1));
+        }
+        self.advanced_authenticated_request(Opcode::HidLedSet, payload)
+            .await
+    }
+
+    pub async fn script_status(&self) -> Result<Value> {
+        self.advanced_authenticated_request(Opcode::ScriptStatus, Vec::new())
+            .await
+    }
+
+    pub async fn script_list(&self, request: Option<ScriptNameRequest>) -> Result<Value> {
+        let payload = request
+            .and_then(|request| request.name)
+            .map(|name| tlv_string(TlvType::ScriptName as u16, &name))
+            .unwrap_or_default();
+        self.advanced_authenticated_request(Opcode::ScriptList, payload)
+            .await
+    }
+
+    pub async fn script_log(&self, request: Option<ScriptLogRequest>) -> Result<Value> {
+        let request = request.unwrap_or(ScriptLogRequest {
+            name: None,
+            offset: Some(0),
+            count: Some(2048),
+        });
+        let mut payload = [
+            tlv_u32(TlvType::Offset as u16, request.offset.unwrap_or(0)),
+            tlv_u32(TlvType::Count as u16, request.count.unwrap_or(2048)),
+        ]
+        .concat();
+        if let Some(name) = request.name {
+            payload.extend(tlv_string(TlvType::ScriptName as u16, &name));
+        }
+        self.advanced_authenticated_request(Opcode::ScriptLog, payload)
+            .await
+    }
+
+    pub async fn script_run(&self, request: ScriptRunRequest) -> Result<Value> {
+        let mut payload = tlv_string(TlvType::ScriptName as u16, &request.name);
+        if let Some(args) = request.args {
+            payload.extend(tlv_string(TlvType::ScriptArgs as u16, &args));
+        }
+        self.advanced_authenticated_request(Opcode::ScriptRun, payload)
+            .await
+    }
+
+    pub async fn system_reboot(&self) -> Result<Value> {
+        self.advanced_authenticated_request(Opcode::SystemReboot, Vec::new())
+            .await
+    }
+
+    pub async fn system_reboot_download(&self) -> Result<Value> {
+        self.advanced_authenticated_request(Opcode::SystemRebootDownload, Vec::new())
+            .await
+    }
+
+    async fn advanced_authenticated_request(
+        &self,
+        opcode: Opcode,
+        payload: Vec<u8>,
+    ) -> Result<Value> {
+        let _command_guard = self.command_queue.lock().await;
+        let mut guard = self.session.lock().await;
+        let session = session_mut(&mut guard)?;
+        ensure_authenticated(session, None).await?;
+        session.backend.advanced_request(opcode, payload).await
+    }
 }
 
 fn resolve_profile(profile: Option<&str>, address: Option<&str>, name: Option<&str>) -> String {
@@ -957,7 +1228,30 @@ fn explicit_credentials(
 }
 
 fn session_mut<'a>(guard: &'a mut Option<CompanionSession>) -> Result<&'a mut CompanionSession> {
-    guard.as_mut().ok_or(CompanionError::NotConnected)
+    let session = guard.as_mut().ok_or(CompanionError::NotConnected)?;
+    if !session.connected.load(Ordering::SeqCst) {
+        return Err(CompanionError::NotConnected);
+    }
+    Ok(session)
+}
+
+fn is_disconnected_event(event: &Value) -> bool {
+    event
+        .get("event")
+        .and_then(Value::as_str)
+        .map(|value| value.eq_ignore_ascii_case("link_disconnected"))
+        .unwrap_or(false)
+        || event
+            .get("connected")
+            .and_then(Value::as_bool)
+            .map(|connected| !connected)
+            .unwrap_or(false)
+        || event
+            .get("connection")
+            .and_then(|connection| connection.get("connected"))
+            .and_then(Value::as_bool)
+            .map(|connected| !connected)
+            .unwrap_or(false)
 }
 
 fn load_session_credentials(session: &CompanionSession) -> Result<CompanionCredentials> {

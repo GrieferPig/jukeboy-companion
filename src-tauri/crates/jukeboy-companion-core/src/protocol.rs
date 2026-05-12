@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use hmac::{Hmac, Mac};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -7,7 +8,7 @@ use serde_json::{json, Value};
 use sha2::Sha256;
 use uuid::Uuid;
 
-use crate::companion::error::{CompanionError, Result};
+use crate::error::{CompanionError, Result};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -94,6 +95,26 @@ pub enum Opcode {
     HistoryAlbumPage = 0x0401,
     BtAudioStatus = 0x0500,
     BtAudioControl = 0x0501,
+    OutputStatus = 0x0103,
+    OutputSelect = 0x0104,
+    WifiListSlots = 0x0207,
+    WifiSaveSlot = 0x0208,
+    WifiReconnect = 0x0209,
+    LastfmRequestToken = 0x0302,
+    HistoryTrackPage = 0x0402,
+    HistoryClear = 0x0403,
+    BtScanStart = 0x0502,
+    BtScanResults = 0x0503,
+    BtBondedList = 0x0504,
+    BtUnbond = 0x0505,
+    HidStatus = 0x0600,
+    HidLedSet = 0x0601,
+    ScriptStatus = 0x0700,
+    ScriptList = 0x0701,
+    ScriptLog = 0x0702,
+    ScriptRun = 0x0703,
+    SystemReboot = 0x0F00,
+    SystemRebootDownload = 0x0F01,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -183,6 +204,35 @@ pub enum TlvType {
     HistoryLastSeen = 0x0704,
     BtA2dpConnected = 0x0800,
     BtBondedCount = 0x0801,
+    BtAddr = 0x0802,
+    BtName = 0x0803,
+    BtRssi = 0x0804,
+    BtCod = 0x0805,
+    BtScanRunning = 0x0806,
+    WifiHasPassword = 0x0900,
+    WifiSlotConfigured = 0x0901,
+    WifiSlotPreferred = 0x0902,
+    WifiSlotActive = 0x0903,
+    HidButtonBitmap = 0x0A00,
+    HidAdcRaw = 0x0A01,
+    HidLedR = 0x0A02,
+    HidLedG = 0x0A03,
+    HidLedB = 0x0A04,
+    HidLedBrightness = 0x0A05,
+    HidLedOff = 0x0A06,
+    ScriptState = 0x0B00,
+    ScriptName = 0x0B01,
+    ScriptResolvedPath = 0x0B02,
+    ScriptMessage = 0x0B03,
+    ScriptOutput = 0x0B04,
+    ScriptRunId = 0x0B05,
+    ScriptExitCode = 0x0B06,
+    ScriptKind = 0x0B07,
+    ScriptSize = 0x0B08,
+    ScriptArgs = 0x0B09,
+    OutputTargetResult = 0x0C00,
+    TotalSize = 0x040D,
+    BinaryData = 0x040E,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -612,6 +662,26 @@ pub fn opcode_name(opcode: u16) -> String {
         value if value == Opcode::HistoryAlbumPage as u16 => "history_album_page",
         value if value == Opcode::BtAudioStatus as u16 => "bt_audio_status",
         value if value == Opcode::BtAudioControl as u16 => "bt_audio_control",
+        value if value == Opcode::OutputStatus as u16 => "output_status",
+        value if value == Opcode::OutputSelect as u16 => "output_select",
+        value if value == Opcode::WifiListSlots as u16 => "wifi_list_slots",
+        value if value == Opcode::WifiSaveSlot as u16 => "wifi_save_slot",
+        value if value == Opcode::WifiReconnect as u16 => "wifi_reconnect",
+        value if value == Opcode::LastfmRequestToken as u16 => "lastfm_request_token",
+        value if value == Opcode::HistoryTrackPage as u16 => "history_track_page",
+        value if value == Opcode::HistoryClear as u16 => "history_clear",
+        value if value == Opcode::BtScanStart as u16 => "bt_scan_start",
+        value if value == Opcode::BtScanResults as u16 => "bt_scan_results",
+        value if value == Opcode::BtBondedList as u16 => "bt_bonded_list",
+        value if value == Opcode::BtUnbond as u16 => "bt_unbond",
+        value if value == Opcode::HidStatus as u16 => "hid_status",
+        value if value == Opcode::HidLedSet as u16 => "hid_led_set",
+        value if value == Opcode::ScriptStatus as u16 => "script_status",
+        value if value == Opcode::ScriptList as u16 => "script_list",
+        value if value == Opcode::ScriptLog as u16 => "script_log",
+        value if value == Opcode::ScriptRun as u16 => "script_run",
+        value if value == Opcode::SystemReboot as u16 => "system_reboot",
+        value if value == Opcode::SystemRebootDownload as u16 => "system_reboot_download",
         _ => return format!("0x{opcode:04x}"),
     }
     .to_string()
@@ -705,6 +775,35 @@ pub fn tlv_name(tlv_type: u16) -> String {
         0x0704 => "history_last_seen",
         0x0800 => "bt_a2dp_connected",
         0x0801 => "bt_bonded_count",
+        0x0802 => "bt_addr",
+        0x0803 => "bt_name",
+        0x0804 => "bt_rssi",
+        0x0805 => "bt_cod",
+        0x0806 => "bt_scan_running",
+        0x0900 => "wifi_has_password",
+        0x0901 => "wifi_slot_configured",
+        0x0902 => "wifi_slot_preferred",
+        0x0903 => "wifi_slot_active",
+        0x0A00 => "hid_button_bitmap",
+        0x0A01 => "hid_adc_raw",
+        0x0A02 => "hid_led_r",
+        0x0A03 => "hid_led_g",
+        0x0A04 => "hid_led_b",
+        0x0A05 => "hid_led_brightness",
+        0x0A06 => "hid_led_off",
+        0x0B00 => "script_state",
+        0x0B01 => "script_name",
+        0x0B02 => "script_resolved_path",
+        0x0B03 => "script_message",
+        0x0B04 => "script_output",
+        0x0B05 => "script_run_id",
+        0x0B06 => "script_exit_code",
+        0x0B07 => "script_kind",
+        0x0B08 => "script_size",
+        0x0B09 => "script_args",
+        0x040D => "total_size",
+        0x040E => "binary_data",
+        0x0C00 => "output_target_result",
         _ => return format!("0x{tlv_type:04x}"),
     }
     .to_string()
@@ -1181,6 +1280,42 @@ pub fn decode_snapshot(frame: &Frame) -> Result<Value> {
     Ok(result)
 }
 
+fn artwork_mime_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("image/png");
+    }
+
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+
+    if bytes.starts_with(b"BM") {
+        return Some("image/bmp");
+    }
+
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        let trimmed = text.trim_start_matches('\u{feff}').trim_start();
+        if trimmed.starts_with("<svg") || (trimmed.starts_with("<?xml") && trimmed.contains("<svg")) {
+            return Some("image/svg+xml");
+        }
+    }
+
+    None
+}
+
+fn artwork_data_url(bytes: &[u8]) -> Option<String> {
+    let mime_type = artwork_mime_type(bytes)?;
+    Some(format!("data:{mime_type};base64,{}", STANDARD.encode(bytes)))
+}
+
 pub fn decode_album(frame: &Frame) -> Result<Value> {
     let mut result = json!({
         "opcode": opcode_name(frame.opcode),
@@ -1198,9 +1333,11 @@ pub fn decode_album(frame: &Frame) -> Result<Value> {
             "description": "",
             "year": null,
             "duration_sec": null,
-            "genre": ""
+            "genre": "",
+            "artwork_data_url": null
         }
     });
+    let mut artwork_bytes = Vec::new();
     for tlv in frame.tlvs.as_deref().unwrap_or(&[]) {
         match tlv.tlv_type {
             value if value == TlvType::CartridgeStatus as u16 => {
@@ -1236,8 +1373,12 @@ pub fn decode_album(frame: &Frame) -> Result<Value> {
             value if value == TlvType::AlbumGenre as u16 => {
                 result["album"]["genre"] = json!(tlv_value_string(tlv))
             }
+            value if value == TlvType::BinaryData as u16 => artwork_bytes.extend_from_slice(&tlv.value),
             _ => {}
         }
+    }
+    if let Some(data_url) = artwork_data_url(&artwork_bytes) {
+        result["album"]["artwork_data_url"] = json!(data_url);
     }
     Ok(result)
 }

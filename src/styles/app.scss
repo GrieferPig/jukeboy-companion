@@ -137,15 +137,15 @@ body {
 .view-frame {
     width: min(100%, 1480px);
     margin: 0 auto;
-    padding-left: 1.5rem;
-    padding-right: 1.5rem;
-    padding-bottom: 6rem;
-    padding-top: 1.5rem;
+    padding-left: 1rem;
+    padding-right: 1rem;
+    padding-bottom: 5rem;
+    padding-top: 1rem;
 }
 
 .view-shell {
     display: grid;
-    gap: 1.5rem;
+    gap: 1rem;
 }
 
 .screen-sheet {
@@ -154,7 +154,7 @@ body {
         linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.01)),
         var(--jukeboy-surface);
     box-shadow: var(--jukeboy-shadow);
-    padding: clamp(1.4rem, 2vw, 2.2rem);
+    padding: clamp(1rem, 1.4vw, 1.5rem);
 }
 
 .companion-alert {
@@ -181,14 +181,21 @@ body {
 
 .hero-sheet {
     display: grid;
-    gap: 2rem;
+    gap: 1.25rem;
     align-items: center;
 }
 
 @media (min-width: 960px) {
     .hero-sheet {
         grid-template-columns: 1fr 340px;
-        gap: 4rem;
+        gap: 1.5rem;
+    }
+}
+
+@media (min-width: 760px) {
+    .hero-sheet {
+        grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+        align-items: stretch;
     }
 }
 
@@ -199,7 +206,7 @@ body {
 }
 
 .display-title {
-    font-size: clamp(2.4rem, 7vw, 5.4rem);
+    font-size: clamp(2rem, 5.4vw, 4.25rem);
     line-height: 1.05;
     word-break: break-word;
 }
@@ -207,8 +214,8 @@ body {
 .section-copy {
     max-width: 58ch;
     color: rgba(255, 255, 255, 0.68);
-    font-size: 1rem;
-    line-height: 1.6;
+    font-size: 0.95rem;
+    line-height: 1.45;
 }
 
 .art-placeholder {
@@ -244,11 +251,33 @@ body {
 
 @media (min-width: 960px) {
     .view-frame {
-        padding: 2rem;
+        padding: 1.25rem 1.25rem 5.25rem;
     }
 
     .hero-sheet {
-        grid-template-columns: minmax(0, 1fr) minmax(320px, 430px);
-        align-items: stretch;
+        grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
+    }
+}
+
+@media (max-height: 760px) {
+    .view-frame {
+        padding-top: 0.75rem;
+        padding-bottom: 4.5rem;
+    }
+
+    .view-shell {
+        gap: 0.85rem;
+    }
+
+    .screen-sheet {
+        padding: 0.9rem;
+    }
+
+    .display-title {
+        font-size: clamp(1.8rem, 4.2vw, 3.4rem);
+    }
+
+    .hero-sheet {
+        gap: 1rem;
     }
 }

@@ -18,6 +18,10 @@ import {
   pairStatus,
   playbackControl,
   scan,
+  scriptList,
+  scriptLog,
+  scriptRun,
+  scriptStatus,
   snapshot,
   trustedList,
   trustedRevoke,
@@ -41,6 +45,9 @@ import {
   type PairingState,
   type PlaybackMode,
   type SnapshotResponse,
+  type ScriptListResponse,
+  type ScriptLogResponse,
+  type ScriptStatusResponse,
   type TrackPageResponse,
   type TrustedListResponse,
   type WifiScanResultsResponse,
@@ -54,8 +61,11 @@ const AUTO_CONNECT_SCAN_TIMEOUT_SECS = 3;
 const AUTO_CONNECT_RETRY_MS = 12_000;
 const SNAPSHOT_POLL_INTERVAL_MS = 3_000;
 const SNAPSHOT_FULL_SYNC_EVERY = 4;
+const MAX_NOTIFICATIONS = 4;
+const ISSUE_NOTIFICATION_COOLDOWN_MS = 8_000;
 
 type AutomationState = "idle" | "scanning" | "connecting" | "pairing" | "syncing" | "paused";
+type CompanionNotificationLevel = "warning" | "recovery";
 
 interface CompanionIssue {
   action: string;
@@ -65,6 +75,12 @@ interface CompanionIssue {
   background: boolean;
   signature: string;
   time: string;
+}
+
+export interface CompanionNotification extends CompanionIssue {
+  id: string;
+  level: CompanionNotificationLevel;
+  createdAtMs: number;
 }
 
 interface ScanDevicesOptions {
@@ -113,6 +129,10 @@ const ACTION_LABELS: Record<string, string> = {
   logoutLastfm: "Last.fm logout",
   cancelPairingRequest: "Pairing cancel request",
   revokeTrustedClient: "Trusted client revoke",
+  refreshScriptStatus: "Script status refresh",
+  refreshScriptList: "Script list refresh",
+  refreshScriptLog: "Script log refresh",
+  runDeviceScript: "Run device script",
 };
 
 function createDefaultConnection(): ConnectionStatus {
@@ -236,6 +256,7 @@ function createDefaultLibraryAlbum(): LibraryAlbumResponse {
       year: null,
       duration_sec: null,
       genre: "",
+      artwork_data_url: null,
     },
   };
 }
@@ -279,6 +300,34 @@ function createDefaultTrustedList(): TrustedListResponse {
     request_id: null,
     trusted_count: 0,
     clients: [],
+  };
+}
+
+function createDefaultScriptStatus(): ScriptStatusResponse {
+  return {
+    opcode: "script_status",
+    request_id: null,
+    state: "idle",
+    active_script: null,
+    message: null,
+  };
+}
+
+function createDefaultScriptList(): ScriptListResponse {
+  return {
+    opcode: "script_list",
+    request_id: null,
+    scripts: [],
+  };
+}
+
+function createDefaultScriptLog(): ScriptLogResponse {
+  return {
+    opcode: "script_log",
+    request_id: null,
+    output: "",
+    offset: 0,
+    returned_count: 0,
   };
 }
 
@@ -326,6 +375,31 @@ async function runSequentially(steps: Array<() => Promise<void>>): Promise<void>
   }
 }
 
+function mergeTrackPages(pages: TrackPageResponse[]): TrackPageResponse {
+  const tracksByIndex = new Map<number, TrackPageResponse["tracks"][number]>();
+  let requestId: number | null = null;
+  let trackCount = 0;
+
+  for (const page of pages) {
+    requestId = page.request_id;
+    trackCount = page.track_count;
+    for (const track of page.tracks) {
+      tracksByIndex.set(track.track_index, track);
+    }
+  }
+
+  const tracks = [...tracksByIndex.values()].sort((left, right) => left.track_index - right.track_index);
+
+  return {
+    opcode: "library_tracks",
+    request_id: requestId,
+    offset: 0,
+    track_count: trackCount,
+    returned_count: tracks.length,
+    tracks,
+  };
+}
+
 function snapshotPatchFromEvent(payload: CompanionEventPayload): Partial<SnapshotResponse> | null {
   const hasSnapshotField = ["auth", "pairing", "playback", "cartridge", "wifi", "lastfm", "history", "bluetooth"]
     .some((key) => isRecord(payload[key]));
@@ -357,6 +431,19 @@ function pairingStateFromUnknown(value: unknown): PairingState | null {
       ? pairStatus.button_sequence.map((entry) => String(entry))
       : [],
   };
+}
+
+function isDisconnectedFrame(payload: CompanionEventPayload): boolean {
+  if (String(payload.event ?? "").toLowerCase() === "link_disconnected") {
+    return true;
+  }
+
+  if (payload.connected === false) {
+    return true;
+  }
+
+  const connection = isRecord(payload.connection) ? payload.connection : null;
+  return connection?.connected === false;
 }
 
 function isConnectionDroppedError(error: unknown): boolean {
@@ -430,6 +517,18 @@ function companionIssueFor(action: string, error: unknown, background = false): 
   };
 }
 
+function companionRecoveryFor(action: string, title: string, detail: string): CompanionIssue {
+  return {
+    action,
+    title,
+    detail,
+    recovery: "",
+    background: false,
+    signature: `recovery:${action}:${title}:${detail}`,
+    time: nowTimestamp(),
+  };
+}
+
 export interface FrameLogEntry {
   id: string;
   command: string;
@@ -446,7 +545,7 @@ export const useCompanionStore = defineStore("companion", () => {
   const initialized = ref(false);
   const frameListenerState = ref("idle");
   const lastError = ref<string | null>(null);
-  const activeIssue = ref<CompanionIssue | null>(null);
+  const notifications = ref<CompanionNotification[]>([]);
   const automationState = ref<AutomationState>("idle");
   const automationMessage = ref("Background discovery will start once the companion app is ready.");
   const autoConnectPaused = ref(false);
@@ -467,18 +566,28 @@ export const useCompanionStore = defineStore("companion", () => {
   const wifiScanState = ref(createDefaultWifiScan());
   const historyAlbumsState = ref(createDefaultHistoryAlbums());
   const trustedClientsState = ref(createDefaultTrustedList());
+  const scriptStatusState = ref(createDefaultScriptStatus());
+  const scriptListState = ref(createDefaultScriptList());
+  const scriptLogState = ref(createDefaultScriptLog());
   const discoveredDevices = ref<DiscoveredDevice[]>([]);
   const frameLog = ref<FrameLogEntry[]>([]);
   const heartbeat = ref<CompanionEventPayload | null>(null);
+  const loadedTrackCatalogChecksum = ref<number | null>(null);
 
   let frameStopper: (() => void) | null = null;
   let frameCounter = 0;
   let reconnectTimer: ReturnType<typeof setInterval> | null = null;
   let snapshotTimer: ReturnType<typeof setInterval> | null = null;
   let snapshotPollCounter = 0;
+  let notificationCounter = 0;
   let autoConnectPending = false;
   let autoPairPending = false;
   let snapshotPollPending = false;
+  let libraryTrackSyncPending = false;
+  let announceNextConnection = false;
+  const recentIssueSignatures = new Map<string, number>();
+
+  const activeIssue = computed(() => notifications.value.find((entry) => entry.level === "warning") ?? null);
 
   const isConnected = computed(() => connection.value.connected);
   const isAuthenticated = computed(() => {
@@ -488,12 +597,7 @@ export const useCompanionStore = defineStore("companion", () => {
       || helloState.value.authenticated
     );
   });
-  const hasMountedCartridge = computed(() => {
-    return snapshotState.value.cartridge.mounted
-      || albumState.value.cartridge.mounted
-      || tracksState.value.tracks.length > 0
-      || (tracksState.value.track_count ?? 0) > 0;
-  });
+  const hasMountedCartridge = computed(() => snapshotState.value.cartridge.mounted);
   const automationLabel = computed(() => {
     switch (automationState.value) {
       case "scanning":
@@ -531,7 +635,7 @@ export const useCompanionStore = defineStore("companion", () => {
     }
     if (!isAuthenticated.value) {
       if (pairingState.value.pairing_pending || autoPairPending) {
-        return "Connected, but pairing is already running in the background. Open Settings if you need to watch the generated button sequence or pairing progress.";
+        return "Connected, but pairing is already running in the background. Follow the live button sequence below or open Settings if you need the full trust details.";
       }
       return "Connected, but authentication is still pending. Saved credentials are being retried automatically, and pairing will start in the background if the device has never been trusted before.";
     }
@@ -542,34 +646,31 @@ export const useCompanionStore = defineStore("companion", () => {
   });
   const statusLabel = computed(() => {
     if (activity.initialize) {
-      return "Booting companion";
+      return "Starting companion";
     }
     if (!connection.value.connected) {
       if (autoConnectPaused.value) {
-        return "Disconnected · auto-connect paused";
+        return "Connection paused";
       }
       if (automationState.value === "connecting") {
-        return "Connecting in background";
+        return "Connecting to Jukeboy";
       }
       if (automationState.value === "scanning") {
         return "Searching for Jukeboy";
       }
-      return "Disconnected · background discovery armed";
+      return "Disconnected";
     }
     if (connection.value.connected) {
       if (pairingState.value.pairing_pending || autoPairPending) {
-        return `Connected to ${connection.value.device?.name ?? "device"} · pairing in background`;
+        return `Connected to ${connection.value.device?.name ?? "Jukeboy"} · pairing`;
       }
       if (!isAuthenticated.value) {
-        return `Connected to ${connection.value.device?.name ?? "device"} · waiting for auth`;
-      }
-      if (automationState.value === "syncing") {
-        return `Connected to ${connection.value.device?.name ?? "device"} · live sync active`;
+        return `Connected to ${connection.value.device?.name ?? "Jukeboy"} · waiting for trust`;
       }
       if (!hasMountedCartridge.value) {
-        return `Connected to ${connection.value.device?.name ?? "device"} · no cartridge`;
+        return `Connected to ${connection.value.device?.name ?? "Jukeboy"} · no cartridge`;
       }
-      return `Connected to ${connection.value.device?.name ?? "device"}`;
+      return `Connected to ${connection.value.device?.name ?? "Jukeboy"}`;
     }
     return "Disconnected";
   });
@@ -588,8 +689,9 @@ export const useCompanionStore = defineStore("companion", () => {
     for (const key of Object.keys(errors)) {
       delete errors[key];
     }
-    activeIssue.value = null;
-    lastError.value = null;
+    notifications.value = notifications.value.filter((entry) => entry.level !== "warning");
+    recentIssueSignatures.clear();
+    syncLastErrorState();
   }
 
   function stopFrameListener(): void {
@@ -601,6 +703,7 @@ export const useCompanionStore = defineStore("companion", () => {
     initialized.value = false;
     automationState.value = "idle";
     automationMessage.value = "Background discovery is idle.";
+    announceNextConnection = false;
   }
 
   function clearFrameLog(): void {
@@ -614,15 +717,23 @@ export const useCompanionStore = defineStore("companion", () => {
     pairingState.value = createDefaultPairingState();
     albumState.value = createDefaultLibraryAlbum();
     tracksState.value = createDefaultTracks();
+    loadedTrackCatalogChecksum.value = null;
     wifiScanState.value = createDefaultWifiScan();
     historyAlbumsState.value = createDefaultHistoryAlbums();
     trustedClientsState.value = createDefaultTrustedList();
+    scriptStatusState.value = createDefaultScriptStatus();
+    scriptListState.value = createDefaultScriptList();
+    scriptLogState.value = createDefaultScriptLog();
     heartbeat.value = null;
   }
 
   function handleConnectionDropped(): void {
     connection.value = createDefaultConnection();
     resetSessionState();
+    autoConnectPending = false;
+    autoPairPending = false;
+    snapshotPollPending = false;
+    announceNextConnection = true;
     syncAutomationState();
   }
 
@@ -631,24 +742,81 @@ export const useCompanionStore = defineStore("companion", () => {
     automationMessage.value = message;
   }
 
+  function nextNotificationId(): string {
+    notificationCounter += 1;
+    return `notice-${notificationCounter}`;
+  }
+
+  function syncLastErrorState(): void {
+    lastError.value = activeIssue.value?.detail ?? null;
+  }
+
+  function queueNotification(issue: CompanionIssue, level: CompanionNotificationLevel): void {
+    const createdAtMs = Date.now();
+
+    if (level === "warning") {
+      const previousSeenAt = recentIssueSignatures.get(issue.signature) ?? 0;
+      if (createdAtMs - previousSeenAt < ISSUE_NOTIFICATION_COOLDOWN_MS) {
+        lastError.value = issue.detail;
+        return;
+      }
+      recentIssueSignatures.set(issue.signature, createdAtMs);
+    }
+
+    notifications.value = [
+      {
+        ...issue,
+        id: nextNotificationId(),
+        level,
+        createdAtMs,
+      },
+      ...notifications.value.filter((entry) => entry.signature !== issue.signature),
+    ].slice(0, MAX_NOTIFICATIONS);
+
+    syncLastErrorState();
+  }
+
+  function removeNotifications(matcher: (entry: CompanionNotification) => boolean): void {
+    const nextNotifications: CompanionNotification[] = [];
+
+    for (const entry of notifications.value) {
+      if (matcher(entry)) {
+        if (entry.level === "warning") {
+          recentIssueSignatures.delete(entry.signature);
+        }
+        continue;
+      }
+      nextNotifications.push(entry);
+    }
+
+    notifications.value = nextNotifications;
+    syncLastErrorState();
+  }
+
+  function dismissNotification(notificationId: string): void {
+    removeNotifications((entry) => entry.id === notificationId);
+  }
+
   function dismissIssue(): void {
-    activeIssue.value = null;
-    lastError.value = null;
+    if (!activeIssue.value) {
+      lastError.value = null;
+      return;
+    }
+
+    dismissNotification(activeIssue.value.id);
   }
 
   function clearIssueForAction(action: string): void {
-    if (activeIssue.value?.action === action) {
-      activeIssue.value = null;
-      lastError.value = null;
-    }
+    removeNotifications((entry) => entry.level === "warning" && entry.action === action);
   }
 
   function reportIssue(action: string, error: unknown, background = false): void {
     const issue = companionIssueFor(action, error, background);
-    if (activeIssue.value?.signature !== issue.signature) {
-      activeIssue.value = issue;
-    }
-    lastError.value = issue.detail;
+    queueNotification(issue, "warning");
+  }
+
+  function reportRecovery(action: string, title: string, detail: string): void {
+    queueNotification(companionRecoveryFor(action, title, detail), "recovery");
   }
 
   function stopReconnectLoop(): void {
@@ -692,7 +860,7 @@ export const useCompanionStore = defineStore("companion", () => {
           () => refreshHello(true),
           () => refreshCapabilities(true),
           () => refreshLibraryAlbum(true),
-          () => refreshLibraryTracks(0, LIBRARY_TRACK_PAGE_SIZE, true),
+          () => refreshLibraryTracks(true),
           () => refreshHistory(0, HISTORY_PAGE_SIZE, true),
           () => refreshPairing(true),
           () => refreshTrusted(true),
@@ -836,9 +1004,18 @@ export const useCompanionStore = defineStore("companion", () => {
   }
 
   function resumeAutoConnect(): void {
+    const wasPaused = autoConnectPaused.value || autoPairPaused.value;
     autoConnectPaused.value = false;
     autoPairPaused.value = false;
+    announceNextConnection = true;
     clearIssueForAction("disconnectDevice");
+    if (wasPaused) {
+      reportRecovery(
+        "resumeAutoConnect",
+        "Auto-connect resumed",
+        "Background discovery is scanning again and will reconnect when the companion is nearby.",
+      );
+    }
     syncAutomationState();
     void attemptAutoConnect();
   }
@@ -857,7 +1034,7 @@ export const useCompanionStore = defineStore("companion", () => {
       options.assign?.(value);
       clearIssueForAction(key);
       if (!options.background) {
-        lastError.value = null;
+        syncLastErrorState();
       }
       logCompanionConsole("action", `${key}:success`, value);
       return value;
@@ -876,6 +1053,7 @@ export const useCompanionStore = defineStore("companion", () => {
   }
 
   async function refreshConnection(background = false): Promise<void> {
+    const wasConnected = connection.value.connected;
     const status = await perform("refreshConnection", () => connectionStatus(), {
       background,
       assign: (value) => {
@@ -884,7 +1062,11 @@ export const useCompanionStore = defineStore("companion", () => {
     });
 
     if (!status?.connected) {
-      resetSessionState();
+      if (wasConnected) {
+        handleConnectionDropped();
+      } else {
+        resetSessionState();
+      }
     }
   }
 
@@ -987,17 +1169,71 @@ export const useCompanionStore = defineStore("companion", () => {
     });
   }
 
-  async function refreshLibraryTracks(offset = 0, count = LIBRARY_TRACK_PAGE_SIZE, background = false): Promise<void> {
+  async function requestLibraryTracksPage(offset = 0, count = LIBRARY_TRACK_PAGE_SIZE, background = false): Promise<TrackPageResponse | null> {
+    if (!connection.value.connected) {
+      return null;
+    }
+
+    return perform("refreshLibraryTracks", () => libraryTracks({ offset, count }), {
+      background,
+    });
+  }
+
+  async function refreshLibraryTracks(background = false): Promise<void> {
     if (!connection.value.connected) {
       return;
     }
 
-    await perform("refreshLibraryTracks", () => libraryTracks({ offset, count }), {
-      background,
-      assign: (value) => {
-        tracksState.value = value;
-      },
-    });
+    const cartridgeMounted = snapshotState.value.cartridge.mounted || albumState.value.cartridge.mounted;
+    if (!cartridgeMounted) {
+      tracksState.value = createDefaultTracks();
+      loadedTrackCatalogChecksum.value = null;
+      return;
+    }
+
+    const checksum = snapshotState.value.cartridge.checksum ?? albumState.value.cartridge.checksum ?? null;
+    const expectedTrackCount = Number(
+      snapshotState.value.cartridge.track_count
+      ?? albumState.value.cartridge.track_count
+      ?? tracksState.value.track_count
+      ?? 0,
+    );
+    const catalogLoadedForCurrentCartridge = checksum === null
+      ? loadedTrackCatalogChecksum.value === null && tracksState.value.tracks.length > 0
+      : loadedTrackCatalogChecksum.value === checksum;
+    const catalogComplete = expectedTrackCount === 0 || tracksState.value.tracks.length >= expectedTrackCount;
+
+    if (catalogLoadedForCurrentCartridge && catalogComplete) {
+      return;
+    }
+
+    if (libraryTrackSyncPending) {
+      return;
+    }
+
+    libraryTrackSyncPending = true;
+    try {
+      const pages: TrackPageResponse[] = [];
+      let offset = 0;
+      while (true) {
+        const page = await requestLibraryTracksPage(offset, LIBRARY_TRACK_PAGE_SIZE, background);
+        if (!page) {
+          return;
+        }
+
+        pages.push(page);
+        offset += page.returned_count;
+
+        if (page.returned_count === 0 || offset >= page.track_count || page.returned_count < LIBRARY_TRACK_PAGE_SIZE) {
+          break;
+        }
+      }
+
+      tracksState.value = mergeTrackPages(pages);
+      loadedTrackCatalogChecksum.value = checksum;
+    } finally {
+      libraryTrackSyncPending = false;
+    }
   }
 
   async function refreshWifiScan(offset = 0, count = WIFI_SCAN_PAGE_SIZE, background = false): Promise<void> {
@@ -1026,18 +1262,64 @@ export const useCompanionStore = defineStore("companion", () => {
     });
   }
 
+  async function refreshScriptStatus(background = false): Promise<void> {
+    if (!connection.value.connected) {
+      return;
+    }
+
+    await perform("refreshScriptStatus", () => scriptStatus(), {
+      background,
+      assign: (value) => {
+        scriptStatusState.value = value;
+      },
+    });
+  }
+
+  async function refreshScriptList(background = false): Promise<void> {
+    if (!connection.value.connected) {
+      return;
+    }
+
+    await perform("refreshScriptList", () => scriptList(), {
+      background,
+      assign: (value) => {
+        scriptListState.value = value;
+      },
+    });
+  }
+
+  async function loadScriptLog(name?: string, offset = 0, count = 2048, background = false): Promise<void> {
+    if (!connection.value.connected) {
+      return;
+    }
+
+    await perform("refreshScriptLog", () => scriptLog({ name, offset, count }), {
+      background,
+      assign: (value) => {
+        scriptLogState.value = value;
+      },
+    });
+  }
+
+  async function refreshScripts(background = false): Promise<void> {
+    await runSequentially([
+      () => refreshScriptStatus(background),
+      () => refreshScriptList(background),
+    ]);
+  }
+
   async function refreshDashboard(background = false): Promise<void> {
     await runSequentially([
       () => refreshSnapshot(background),
       () => refreshLibraryAlbum(background),
-      () => refreshLibraryTracks(0, LIBRARY_TRACK_PAGE_SIZE, background),
+      () => refreshLibraryTracks(background),
     ]);
   }
 
   async function refreshLibrary(background = false): Promise<void> {
     await runSequentially([
       () => refreshLibraryAlbum(background),
-      () => refreshLibraryTracks(0, LIBRARY_TRACK_PAGE_SIZE, background),
+      () => refreshLibraryTracks(background),
       () => refreshHistory(0, HISTORY_PAGE_SIZE, background),
     ]);
   }
@@ -1056,6 +1338,7 @@ export const useCompanionStore = defineStore("companion", () => {
       () => refreshCapabilities(background),
       () => refreshPairing(background),
       () => refreshTrusted(background),
+      () => refreshScripts(background),
     ]);
   }
 
@@ -1070,7 +1353,7 @@ export const useCompanionStore = defineStore("companion", () => {
       () => refreshHello(background),
       () => refreshCapabilities(background),
       () => refreshLibraryAlbum(background),
-      () => refreshLibraryTracks(0, LIBRARY_TRACK_PAGE_SIZE, background),
+      () => refreshLibraryTracks(background),
       () => refreshHistory(0, HISTORY_PAGE_SIZE, background),
       () => refreshPairing(background),
       () => refreshTrusted(background),
@@ -1133,11 +1416,23 @@ export const useCompanionStore = defineStore("companion", () => {
     };
 
     const previousChecksum = snapshotState.value.cartridge.checksum;
+    const previousMounted = snapshotState.value.cartridge.mounted;
     snapshotState.value = nextSnapshot;
     pairingState.value = nextSnapshot.pairing;
 
+    if (!nextSnapshot.cartridge.mounted) {
+      if (previousMounted || tracksState.value.tracks.length > 0) {
+        tracksState.value = createDefaultTracks();
+        loadedTrackCatalogChecksum.value = null;
+      }
+      return true;
+    }
+
     if (previousChecksum !== nextSnapshot.cartridge.checksum) {
+      loadedTrackCatalogChecksum.value = null;
       void refreshLibrary(true);
+    } else if ((nextSnapshot.cartridge.track_count ?? 0) > tracksState.value.tracks.length) {
+      void refreshLibraryTracks(true);
     }
 
     return true;
@@ -1145,6 +1440,17 @@ export const useCompanionStore = defineStore("companion", () => {
 
   function handleFrame(payload: CompanionEventPayload): void {
     appendFrame(payload);
+    if (isDisconnectedFrame(payload)) {
+      if (activity.disconnectDevice) {
+        connection.value = createDefaultConnection();
+        resetSessionState();
+        return;
+      }
+
+      handleConnectionDropped();
+      return;
+    }
+
     if (payload.frame_type === "heartbeat") {
       heartbeat.value = payload;
       if (typeof payload.generation === "number" || typeof payload.uptime_ms === "number") {
@@ -1228,6 +1534,16 @@ export const useCompanionStore = defineStore("companion", () => {
     clearErrors();
     lastError.value = null;
     connection.value = status;
+
+    if (announceNextConnection && connection.value.connected) {
+      reportRecovery(
+        options.activityKey ?? "connectToDevice",
+        "Companion connected",
+        `${connection.value.device?.name ?? "Jukeboy"} is back online and live sync has resumed.`,
+      );
+      announceNextConnection = false;
+    }
+
     await refreshAll(options.background);
 
     if (connection.value.connected && !isAuthenticated.value && !pairingState.value.pairing_pending && !autoPairPaused.value) {
@@ -1248,6 +1564,7 @@ export const useCompanionStore = defineStore("companion", () => {
     resetSessionState();
     autoConnectPaused.value = true;
     autoPairPaused.value = true;
+    announceNextConnection = false;
     syncAutomationState();
   }
 
@@ -1340,6 +1657,24 @@ export const useCompanionStore = defineStore("companion", () => {
     await refreshSnapshot(true);
   }
 
+  async function runDeviceScript(name: string, args?: string): Promise<void> {
+    const result = await perform("runDeviceScript", () => scriptRun({ name, args }));
+    if (!result) {
+      return;
+    }
+
+    scriptStatusState.value = {
+      ...scriptStatusState.value,
+      ...result,
+    };
+
+    await runSequentially([
+      () => refreshScriptStatus(true),
+      () => refreshScriptList(true),
+      () => loadScriptLog(name, 0, 2048, true),
+    ]);
+  }
+
   async function setLastfmAuthUrl(url: string): Promise<void> {
     await perform("setLastfmAuthUrl", () => lastfmControl({ action: "set_auth_url", url }));
     await refreshSnapshot(true);
@@ -1405,6 +1740,15 @@ export const useCompanionStore = defineStore("companion", () => {
       return;
     }
 
+    if (command.startsWith("companion_script_")) {
+      await runSequentially([
+        () => refreshScriptStatus(true),
+        () => refreshScriptList(true),
+        () => loadScriptLog(undefined, 0, 2048, true),
+      ]);
+      return;
+    }
+
     await refreshConnection(true);
     if (!connection.value.connected) {
       resetSessionState();
@@ -1419,7 +1763,7 @@ export const useCompanionStore = defineStore("companion", () => {
     await runSequentially([
       () => refreshSnapshot(true),
       () => refreshLibraryAlbum(true),
-      () => refreshLibraryTracks(0, LIBRARY_TRACK_PAGE_SIZE, true),
+      () => refreshLibraryTracks(true),
       () => refreshHistory(0, HISTORY_PAGE_SIZE, true),
       () => refreshPairing(true),
       () => refreshTrusted(true),
@@ -1458,6 +1802,7 @@ export const useCompanionStore = defineStore("companion", () => {
     connection,
     discoveredDevices,
     disconnectDevice,
+    dismissNotification,
     dismissIssue,
     errors,
     frameListenerState,
@@ -1476,6 +1821,7 @@ export const useCompanionStore = defineStore("companion", () => {
     playTrack,
     previousTrack,
     nextTrack,
+    notifications,
     refreshAll,
     refreshConnectivity,
     refreshDashboard,
@@ -1483,6 +1829,7 @@ export const useCompanionStore = defineStore("companion", () => {
     refreshLibrary,
     refreshLibraryTracks,
     refreshSettings,
+    refreshScripts,
     refreshWifiScan,
     scanDevices,
     setLastfmAuthUrl,
@@ -1494,6 +1841,9 @@ export const useCompanionStore = defineStore("companion", () => {
     sessionPhase,
     seekTo,
     snapshotState,
+    scriptStatusState,
+    scriptListState,
+    scriptLogState,
     startWifiScan,
     statusLabel,
     stopFrameListener,
@@ -1506,6 +1856,8 @@ export const useCompanionStore = defineStore("companion", () => {
     revokeTrustedClient,
     authenticateLastfm,
     logoutLastfm,
+    loadScriptLog,
+    runDeviceScript,
     connectWifiBySsid,
     connectWifiBySlot,
     disconnectWifiNetwork,

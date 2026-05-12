@@ -170,6 +170,7 @@ export interface LibraryAlbumResponse {
     year: number | null;
     duration_sec: number | null;
     genre: string;
+    artwork_data_url: string | null;
   };
 }
 
@@ -224,6 +225,24 @@ export interface HistoryAlbumPageResponse {
   albums: HistoryAlbum[];
 }
 
+export interface HistoryTrackEntry {
+  track_index: number;
+  title: string;
+  artist: string;
+  duration_sec: number | null;
+  file_num: number | null;
+  played_at?: number | null;
+}
+
+export interface HistoryTrackPageResponse {
+  opcode: string;
+  request_id: number | null;
+  offset: number;
+  track_count: number;
+  returned_count: number;
+  tracks: HistoryTrackEntry[];
+}
+
 export interface TrustedClient {
   client_id: string;
   app_name: string;
@@ -235,6 +254,98 @@ export interface TrustedListResponse {
   request_id: number | null;
   trusted_count: number;
   clients: TrustedClient[];
+}
+
+export interface OutputStatusResponse {
+  opcode: string;
+  request_id: number | null;
+  output_target: OutputTarget | null;
+}
+
+export interface WifiSlotEntry {
+  slot: number;
+  ssid: string;
+  configured: boolean;
+  preferred: boolean;
+  active: boolean;
+}
+
+export interface WifiListSlotsResponse {
+  opcode: string;
+  request_id: number | null;
+  slots: WifiSlotEntry[];
+}
+
+export interface BluetoothScanDevice {
+  address: string;
+  name: string;
+  rssi?: number | null;
+  bonded?: boolean;
+}
+
+export interface BluetoothScanResultsResponse {
+  opcode: string;
+  request_id: number | null;
+  offset: number;
+  total_count: number;
+  returned_count: number;
+  devices: BluetoothScanDevice[];
+}
+
+export interface BondedBluetoothDevice {
+  address: string;
+  name: string;
+}
+
+export interface BondedBluetoothListResponse {
+  opcode: string;
+  request_id: number | null;
+  bonded_count: number;
+  devices: BondedBluetoothDevice[];
+}
+
+export interface HidStatusResponse {
+  opcode: string;
+  request_id: number | null;
+  button_bitmap: number;
+  adc_raw: number;
+  led: {
+    r: number;
+    g: number;
+    b: number;
+    brightness: number;
+    off: boolean;
+  };
+}
+
+export interface ScriptStatusResponse {
+  opcode: string;
+  request_id: number | null;
+  state: string;
+  active_script: string | null;
+  message?: string | null;
+}
+
+export interface ScriptListEntry {
+  name: string;
+  kind?: string;
+  last_run?: string;
+  resolved_path?: string;
+  size?: number;
+}
+
+export interface ScriptListResponse {
+  opcode: string;
+  request_id: number | null;
+  scripts: ScriptListEntry[];
+}
+
+export interface ScriptLogResponse {
+  opcode: string;
+  request_id: number | null;
+  output: string;
+  offset: number;
+  returned_count: number;
 }
 
 export interface ScanRequest {
@@ -300,6 +411,50 @@ export interface LastfmControlRequest {
   username?: string;
   password?: string;
   enabled?: boolean;
+}
+
+export interface OutputSelectRequest {
+  output_target: OutputTarget;
+}
+
+export interface WifiSaveSlotRequest {
+  slot: number;
+  ssid: string;
+  password?: string;
+  preferred?: boolean;
+}
+
+export interface HistoryTrackPageRequest {
+  checksum?: number;
+  offset?: number;
+  count?: number;
+}
+
+export interface BluetoothUnbondRequest {
+  address: string;
+}
+
+export interface HidLedSetRequest {
+  r?: number;
+  g?: number;
+  b?: number;
+  brightness?: number;
+  off?: boolean;
+}
+
+export interface ScriptNameRequest {
+  name?: string;
+}
+
+export interface ScriptRunRequest {
+  name: string;
+  args?: string;
+}
+
+export interface ScriptLogRequest {
+  name?: string;
+  offset?: number;
+  count?: number;
 }
 
 const tauriTransport: CompanionTransport = {
@@ -505,4 +660,84 @@ export function pairCancel(): Promise<PairingState> {
 
 export function bluetoothControl(action: BluetoothAction): Promise<unknown> {
   return invokeCommand("companion_bt_control", { action });
+}
+
+export function outputStatus(): Promise<OutputStatusResponse> {
+  return invokeCommand("companion_output_status");
+}
+
+export function outputSelect(request: OutputSelectRequest): Promise<OutputStatusResponse> {
+  return invokeCommand("companion_output_select", request);
+}
+
+export function wifiListSlots(): Promise<WifiListSlotsResponse> {
+  return invokeCommand("companion_wifi_list_slots");
+}
+
+export function wifiSaveSlot(request: WifiSaveSlotRequest): Promise<unknown> {
+  return invokeCommand("companion_wifi_save_slot", request);
+}
+
+export function wifiReconnect(): Promise<unknown> {
+  return invokeCommand("companion_wifi_reconnect");
+}
+
+export function lastfmRequestToken(): Promise<unknown> {
+  return invokeCommand("companion_lastfm_request_token");
+}
+
+export function historyTracks(request?: HistoryTrackPageRequest): Promise<HistoryTrackPageResponse> {
+  return invokeCommand("companion_history_tracks", request);
+}
+
+export function historyClear(): Promise<unknown> {
+  return invokeCommand("companion_history_clear");
+}
+
+export function bluetoothScanStart(): Promise<unknown> {
+  return invokeCommand("companion_bt_scan_start");
+}
+
+export function bluetoothScanResults(request?: PageRequest): Promise<BluetoothScanResultsResponse> {
+  return invokeCommand("companion_bt_scan_results", request);
+}
+
+export function bluetoothBondedList(): Promise<BondedBluetoothListResponse> {
+  return invokeCommand("companion_bt_bonded_list");
+}
+
+export function bluetoothUnbond(request: BluetoothUnbondRequest): Promise<unknown> {
+  return invokeCommand("companion_bt_unbond", request);
+}
+
+export function hidStatus(): Promise<HidStatusResponse> {
+  return invokeCommand("companion_hid_status");
+}
+
+export function hidLedSet(request: HidLedSetRequest): Promise<unknown> {
+  return invokeCommand("companion_hid_led_set", request);
+}
+
+export function scriptStatus(): Promise<ScriptStatusResponse> {
+  return invokeCommand("companion_script_status");
+}
+
+export function scriptList(request?: ScriptNameRequest): Promise<ScriptListResponse> {
+  return invokeCommand("companion_script_list", request);
+}
+
+export function scriptLog(request?: ScriptLogRequest): Promise<ScriptLogResponse> {
+  return invokeCommand("companion_script_log", request);
+}
+
+export function scriptRun(request: ScriptRunRequest): Promise<ScriptStatusResponse> {
+  return invokeCommand("companion_script_run", request);
+}
+
+export function systemReboot(): Promise<unknown> {
+  return invokeCommand("companion_system_reboot");
+}
+
+export function systemRebootDownload(): Promise<unknown> {
+  return invokeCommand("companion_system_reboot_download");
 }

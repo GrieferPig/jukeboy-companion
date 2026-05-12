@@ -1,0 +1,21 @@
+[package]
+name = "jukeboy-companion-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+jukeboy-companion-core = { path = "../jukeboy-companion-core" }
+tokio = { version = "1", features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+    "io-std",
+] }
+serde_json = "1"
+hex = "0.4"
+clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "jukeboy-companion-tests"
+path = "src/main.rs"

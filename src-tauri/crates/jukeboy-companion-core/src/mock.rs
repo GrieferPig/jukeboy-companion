@@ -7,17 +7,18 @@ use tokio::{
     time::{interval, Duration, MissedTickBehavior},
 };
 
-use crate::companion::{
+use crate::{
     error::Result,
     protocol::{
-        button_id_to_name, BtAction, ConnectedDevice, DiscoveredDevice, LastfmAction,
-        PlaybackAction,
+        button_id_to_name, opcode_name, BtAction, ConnectedDevice, DiscoveredDevice,
+        LastfmAction, Opcode, PlaybackAction,
     },
 };
 
 const MOCK_ADDRESS: &str = "MO:CK:BE:EF:00:01";
 const MOCK_NAME: &str = "MOCK_JUKEBOY";
 const MOCK_SERVICE_UUID: &str = "0000abf0-0000-1000-8000-00805f9b34fb";
+const MOCK_ARTWORK_DATA_URL: &str = "data:image/svg+xml;charset=UTF-8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%20320%20320%22%3E%3Crect%20width%3D%22320%22%20height%3D%22320%22%20rx%3D%2228%22%20fill%3D%22%231f2933%22/%3E%3Ccircle%20cx%3D%22242%22%20cy%3D%2278%22%20r%3D%2244%22%20fill%3D%22%237aa2ff%22%20fill-opacity%3D%220.82%22/%3E%3Cpath%20d%3D%22M36%20236c42-56%2095-84%20159-84%2050%200%2096%2018%20138%2054v78H36z%22%20fill%3D%22%23d6dde6%22%20fill-opacity%3D%220.92%22/%3E%3Crect%20x%3D%2238%22%20y%3D%2238%22%20width%3D%22108%22%20height%3D%22108%22%20rx%3D%2218%22%20fill%3D%22%234a5568%22/%3E%3C/svg%3E";
 
 pub fn mock_mode_enabled() -> bool {
     std::env::var("JUKEBOY_COMPANION_BACKEND")
@@ -337,6 +338,20 @@ impl MockState {
     }
 
     fn event(&self, event: &str) -> Value {
+        if event == "link_disconnected" {
+            return json!({
+                "opcode": "connection_status",
+                "frame_type": "event",
+                "event": "link_disconnected",
+                "connected": false,
+                "device": null,
+                "connection": {
+                    "connected": false,
+                    "device": null,
+                },
+            });
+        }
+
         let mut payload = self.snapshot("snapshot");
         payload["frame_type"] = json!("event");
         payload["event"] = json!(event);
@@ -376,6 +391,7 @@ impl MockState {
                 "year": 2026,
                 "duration_sec": self.tracks.iter().map(|track| track.duration_sec).sum::<u32>(),
                 "genre": "Diagnostics",
+                "artwork_data_url": MOCK_ARTWORK_DATA_URL,
             },
         })
     }
@@ -905,6 +921,158 @@ impl MockCompanionBackend {
         let response = state.snapshot("bt_audio_control");
         drop(state);
         self.emit_snapshot_event("bluetooth").await;
+        Ok(response)
+    }
+
+    pub async fn advanced_request(&self, opcode: Opcode, _payload: Vec<u8>) -> Result<Value> {
+        let mut state = self.state.lock().await;
+        let response = match opcode {
+            Opcode::OutputStatus => json!({
+                "opcode": "output_status",
+                "request_id": null,
+                "output_target": state.output_target,
+            }),
+            Opcode::OutputSelect => {
+                state.touch_generation();
+                json!({
+                    "opcode": "output_select",
+                    "request_id": null,
+                    "output_target": state.output_target,
+                })
+            }
+            Opcode::WifiListSlots => json!({
+                "opcode": "wifi_list_slots",
+                "request_id": null,
+                "slots": [
+                    { "slot": 0, "ssid": "Jukeboy Lab", "configured": true, "preferred": true, "active": state.wifi_active_slot == Some(0) },
+                    { "slot": 1, "ssid": "Stage Router", "configured": true, "preferred": false, "active": state.wifi_active_slot == Some(1) },
+                    { "slot": 2, "ssid": "Open Bench", "configured": true, "preferred": false, "active": state.wifi_active_slot == Some(2) }
+                ]
+            }),
+            Opcode::WifiSaveSlot => json!({
+                "opcode": "wifi_save_slot",
+                "request_id": null,
+                "saved": true,
+            }),
+            Opcode::WifiReconnect => {
+                state.wifi_state = "connected";
+                state.touch_generation();
+                state.snapshot("wifi_reconnect")
+            }
+            Opcode::LastfmRequestToken => {
+                state.lastfm_has_token = true;
+                state.lastfm_pending_commands = state.lastfm_pending_commands.saturating_add(1);
+                state.touch_generation();
+                state.snapshot("lastfm_request_token")
+            }
+            Opcode::HistoryTrackPage => json!({
+                "opcode": "history_track_page",
+                "request_id": null,
+                "offset": 0,
+                "track_count": state.tracks.len(),
+                "returned_count": state.tracks.len(),
+                "tracks": state.tracks.iter().enumerate().map(|(index, track)| json!({
+                    "track_index": index,
+                    "title": track.title,
+                    "artist": track.artist,
+                    "duration_sec": track.duration_sec,
+                    "file_num": track.file_num,
+                    "played_at": 1_777_744_000u32 + index as u32,
+                })).collect::<Vec<_>>(),
+            }),
+            Opcode::HistoryClear => json!({
+                "opcode": "history_clear",
+                "request_id": null,
+                "cleared": true,
+            }),
+            Opcode::BtScanStart => json!({
+                "opcode": "bt_scan_start",
+                "request_id": null,
+                "running": true,
+            }),
+            Opcode::BtScanResults => json!({
+                "opcode": "bt_scan_results",
+                "request_id": null,
+                "offset": 0,
+                "total_count": 2,
+                "returned_count": 2,
+                "devices": [
+                    { "address": "BT:MO:CK:00:01", "name": "Studio Speaker", "rssi": -41, "bonded": true },
+                    { "address": "BT:MO:CK:00:02", "name": "Kitchen Speaker", "rssi": -57, "bonded": false }
+                ]
+            }),
+            Opcode::BtBondedList => json!({
+                "opcode": "bt_bonded_list",
+                "request_id": null,
+                "bonded_count": state.bluetooth_bonded_count,
+                "devices": [
+                    { "address": "BT:MO:CK:00:01", "name": "Studio Speaker" },
+                    { "address": "BT:MO:CK:00:03", "name": "Office Speaker" }
+                ]
+            }),
+            Opcode::BtUnbond => {
+                state.bluetooth_bonded_count = state.bluetooth_bonded_count.saturating_sub(1);
+                json!({
+                    "opcode": "bt_unbond",
+                    "request_id": null,
+                    "bonded_count": state.bluetooth_bonded_count,
+                    "removed": true,
+                })
+            }
+            Opcode::HidStatus => json!({
+                "opcode": "hid_status",
+                "request_id": null,
+                "button_bitmap": 0,
+                "adc_raw": 512,
+                "led": { "r": 32, "g": 24, "b": 12, "brightness": 40, "off": false }
+            }),
+            Opcode::HidLedSet => json!({
+                "opcode": "hid_led_set",
+                "request_id": null,
+                "updated": true,
+            }),
+            Opcode::ScriptStatus => json!({
+                "opcode": "script_status",
+                "request_id": null,
+                "state": "idle",
+                "active_script": null,
+            }),
+            Opcode::ScriptList => json!({
+                "opcode": "script_list",
+                "request_id": null,
+                "scripts": [
+                    { "name": "Refresh Artwork Cache", "kind": "maintenance", "last_run": "Idle" },
+                    { "name": "Reindex Library", "kind": "maintenance", "last_run": "Failed" }
+                ]
+            }),
+            Opcode::ScriptLog => json!({
+                "opcode": "script_log",
+                "request_id": null,
+                "output": "[12:00:00] Running script\n[12:00:01] Completed successfully",
+                "offset": 0,
+                "returned_count": 66,
+            }),
+            Opcode::ScriptRun => json!({
+                "opcode": "script_run",
+                "request_id": null,
+                "state": "running",
+                "message": "Script started",
+            }),
+            Opcode::SystemReboot => json!({
+                "opcode": "system_reboot",
+                "request_id": null,
+                "accepted": true,
+            }),
+            Opcode::SystemRebootDownload => json!({
+                "opcode": "system_reboot_download",
+                "request_id": null,
+                "accepted": true,
+            }),
+            _ => json!({
+                "opcode": opcode_name(opcode as u16),
+                "request_id": null,
+            }),
+        };
         Ok(response)
     }
 

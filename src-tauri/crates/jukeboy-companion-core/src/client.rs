@@ -9,7 +9,7 @@ use std::{
 const REQUEST_DEQUEUE_DELAY: Duration = Duration::from_millis(100);
 
 #[cfg(target_os = "android")]
-use crate::companion::android_ble::{self, AndroidBleConnection};
+use crate::android_ble::{self, AndroidBleConnection};
 #[cfg(not(target_os = "android"))]
 use btleplug::{
     api::{
@@ -30,7 +30,7 @@ use tokio::{
 #[cfg(not(target_os = "android"))]
 use tokio::time::sleep;
 
-use crate::companion::{
+use crate::{
     error::{CompanionError, Result},
     protocol::{
         build_auth_proof, decode_album, decode_auth_challenge, decode_auth_status,
@@ -45,7 +45,7 @@ use crate::companion::{
 };
 
 #[cfg(not(target_os = "android"))]
-use crate::companion::protocol::{notify_uuid, service_uuid, write_uuid};
+use crate::protocol::{notify_uuid, service_uuid, write_uuid};
 
 #[derive(Debug)]
 struct ClientInner {
@@ -582,6 +582,17 @@ impl CompanionBleClient {
         )
     }
 
+    /// Send a raw request with the given opcode and pre-encoded TLV payload bytes,
+    /// returning the response Frame for callers that want to decode it directly.
+    pub async fn raw_request(&self, opcode: u16, payload: Vec<u8>) -> Result<Frame> {
+        self.request(opcode, None, Some(payload)).await
+    }
+
+    pub async fn decoded_raw_request(&self, opcode: Opcode, payload: Vec<u8>) -> Result<Value> {
+        let frame = self.raw_request(opcode as u16, payload).await?;
+        decode_frame(&frame)
+    }
+
     async fn request(
         &self,
         opcode: u16,
@@ -790,6 +801,19 @@ async fn process_notification(
 async fn fail_pending(inner: &ClientInner, error: CompanionError) {
     let disconnected = matches!(error, CompanionError::NotConnected);
     let message = error.to_string();
+    if disconnected {
+        let _ = inner.event_tx.send(json!({
+            "opcode": "connection_status",
+            "frame_type": "event",
+            "event": "link_disconnected",
+            "connected": false,
+            "device": null,
+            "connection": {
+                "connected": false,
+                "device": null,
+            },
+        }));
+    }
     let mut pending = inner.pending.lock().await;
     let senders = pending
         .drain()

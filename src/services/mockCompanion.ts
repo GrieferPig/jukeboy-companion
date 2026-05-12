@@ -19,8 +19,31 @@ interface MockTrack {
   file_num: number;
 }
 
+interface MockScript {
+  name: string;
+  kind: string;
+  last_run: string;
+  log: string;
+}
+
+function createMockArtworkDataUrl(): string {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-label="Mock cartridge artwork">
+      <rect width="320" height="320" rx="28" fill="#1f2933" />
+      <circle cx="242" cy="78" r="44" fill="#7aa2ff" fill-opacity="0.82" />
+      <path d="M36 236c42-56 95-84 159-84 50 0 96 18 138 54v78H36z" fill="#d6dde6" fill-opacity="0.92" />
+      <rect x="38" y="38" width="108" height="108" rx="18" fill="#4a5568" />
+    </svg>
+  `;
+
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+const MOCK_ARTWORK_DATA_URL = createMockArtworkDataUrl();
+
 interface MockState {
   connected: boolean;
+  available: boolean;
   generation: number;
   startedAt: number;
   authenticated: boolean;
@@ -51,7 +74,11 @@ interface MockState {
   lastfm_now_playing: boolean;
   bluetooth_a2dp_connected: boolean;
   bluetooth_bonded_count: number;
+  script_state: string;
+  active_script: string | null;
+  script_message: string;
   tracks: MockTrack[];
+  scripts: MockScript[];
 }
 
 const cartridgeChecksum = 0x4a554b45;
@@ -59,6 +86,7 @@ const cartridgeChecksum = 0x4a554b45;
 function createState(): MockState {
   return {
     connected: false,
+    available: true,
     generation: 1,
     startedAt: Date.now(),
     authenticated: true,
@@ -89,12 +117,29 @@ function createState(): MockState {
     lastfm_now_playing: true,
     bluetooth_a2dp_connected: false,
     bluetooth_bonded_count: 2,
+    script_state: "idle",
+    active_script: null,
+    script_message: "",
     tracks: [
       { title: "Signal Mirror", artist: "Test Pressing", duration_sec: 241, file_num: 1 },
       { title: "Immediate Event", artist: "Test Pressing", duration_sec: 198, file_num: 2 },
       { title: "Heartbeat Window", artist: "Firmware Choir", duration_sec: 225, file_num: 3 },
       { title: "Queue Depth Sixteen", artist: "Firmware Choir", duration_sec: 264, file_num: 4 },
       { title: "Pairing Sequence", artist: "Button Matrix", duration_sec: 211, file_num: 5 },
+    ],
+    scripts: [
+      {
+        name: "Refresh Artwork Cache",
+        kind: "maintenance",
+        last_run: "Idle",
+        log: "[12:00:00] Artwork cache refreshed successfully.",
+      },
+      {
+        name: "Reindex Library",
+        kind: "maintenance",
+        last_run: "Failed",
+        log: "[11:42:18] Reindex started.\n[11:42:22] Missing cartridge metadata.",
+      },
     ],
   };
 }
@@ -115,6 +160,17 @@ class BrowserMockCompanionTransport implements CompanionTransport {
   private readonly listeners = new Set<Listener>();
   private readonly state = createState();
   private heartbeatId: number | null = null;
+  private readonly mockDisconnectHandler = () => this.dropConnection(true);
+  private readonly mockRestoreHandler = () => {
+    this.state.available = true;
+  };
+
+  constructor() {
+    if (typeof window !== "undefined") {
+      window.addEventListener("jukeboy:mock-disconnect", this.mockDisconnectHandler);
+      window.addEventListener("jukeboy:mock-restore", this.mockRestoreHandler);
+    }
+  }
 
   async invoke<T>(command: string, request?: CommandRequest): Promise<T> {
     const response = this.dispatch(command, request);
@@ -134,16 +190,24 @@ class BrowserMockCompanionTransport implements CompanionTransport {
   }
 
   private dispatch(command: string, request?: CommandRequest): unknown {
+    if (!["companion_scan", "companion_connect", "companion_disconnect", "companion_connection_status"].includes(command)) {
+      this.ensureConnected();
+    }
+
     switch (command) {
       case "companion_scan":
-        return [{ address: "MO:CK:BE:EF:00:01", name: "MOCK_JUKEBOY", service_match: true, uuids: ["0000abf0-0000-1000-8000-00805f9b34fb"] }];
+        return this.state.available
+          ? [{ address: "MO:CK:BE:EF:00:01", name: "MOCK_JUKEBOY", service_match: true, uuids: ["0000abf0-0000-1000-8000-00805f9b34fb"] }]
+          : [];
       case "companion_connect":
+        if (!this.state.available) {
+          throw new Error("No Jukeboy companion BLE device found");
+        }
         this.state.connected = true;
         this.touch("link_connected");
         return this.connectionStatus();
       case "companion_disconnect":
-        this.state.connected = false;
-        this.emit({ frame_type: "event", event: "link_disconnected" });
+        this.dropConnection(false);
         return this.connectionStatus();
       case "companion_connection_status":
         return this.connectionStatus();
@@ -219,9 +283,83 @@ class BrowserMockCompanionTransport implements CompanionTransport {
       case "companion_bt_control":
         this.bluetoothControl(request);
         return this.touch("bluetooth", "bt_audio_control");
+      case "companion_output_status":
+        return { opcode: "output_status", request_id: null, output_target: this.state.output_target };
+      case "companion_output_select":
+        this.state.output_target = String(requestRecord(request).output_target ?? this.state.output_target) as OutputTarget;
+        return { opcode: "output_select", request_id: null, output_target: this.state.output_target };
+      case "companion_wifi_list_slots":
+        return this.wifiSlots();
+      case "companion_wifi_save_slot":
+        return { opcode: "wifi_save_slot", request_id: null, saved: true };
+      case "companion_wifi_reconnect":
+        this.state.wifi_state = "connected";
+        this.state.wifi_internet = true;
+        return this.touch("wifi", "wifi_reconnect");
+      case "companion_lastfm_request_token":
+        this.state.lastfm_has_token = true;
+        return this.touch("lastfm", "lastfm_request_token");
+      case "companion_history_tracks":
+        return this.historyTracks(request);
+      case "companion_history_clear":
+        return { opcode: "history_clear", request_id: null, cleared: true };
+      case "companion_bt_scan_start":
+        return { opcode: "bt_scan_start", request_id: null, running: true };
+      case "companion_bt_scan_results":
+        return this.bluetoothScanResults(request);
+      case "companion_bt_bonded_list":
+        return this.bondedBluetoothList();
+      case "companion_bt_unbond":
+        this.state.bluetooth_bonded_count = Math.max(0, this.state.bluetooth_bonded_count - 1);
+        return { opcode: "bt_unbond", request_id: null, bonded_count: this.state.bluetooth_bonded_count, removed: true };
+      case "companion_hid_status":
+        return this.hidStatus();
+      case "companion_hid_led_set":
+        return { opcode: "hid_led_set", request_id: null, updated: true };
+      case "companion_script_status":
+        return this.scriptStatus();
+      case "companion_script_list":
+        return this.scriptList(request);
+      case "companion_script_log":
+        return this.scriptLog(request);
+      case "companion_script_run":
+        this.runScript(request);
+        return this.scriptStatus("script_run");
+      case "companion_system_reboot":
+        return { opcode: "system_reboot", request_id: null, accepted: true };
+      case "companion_system_reboot_download":
+        return { opcode: "system_reboot_download", request_id: null, accepted: true };
       default:
         throw new Error(`Unknown mock command: ${command}`);
     }
+  }
+
+  private ensureConnected(): void {
+    if (!this.state.connected) {
+      throw new Error("BLE device is not connected");
+    }
+  }
+
+  private dropConnection(makeUnavailable: boolean): void {
+    this.state.connected = false;
+    if (makeUnavailable) {
+      this.state.available = false;
+    }
+    if (this.heartbeatId !== null) {
+      window.clearInterval(this.heartbeatId);
+      this.heartbeatId = null;
+    }
+    this.emit({
+      opcode: "connection_status",
+      frame_type: "event",
+      event: "link_disconnected",
+      connected: false,
+      device: null,
+      connection: {
+        connected: false,
+        device: null,
+      },
+    });
   }
 
   private connectionStatus(): ConnectionStatus {
@@ -333,7 +471,20 @@ class BrowserMockCompanionTransport implements CompanionTransport {
   }
 
   private libraryAlbum() {
-    return { opcode: "library_album", request_id: null, cartridge: { status: "ready", mounted: true, checksum: cartridgeChecksum, metadata_version: 1, track_count: this.state.tracks.length }, album: { name: "Mock Cartridge", artist: "Jukeboy Test Rig", description: "Deterministic firmware-style state for browser and Tauri sync tests.", year: 2026, duration_sec: this.state.tracks.reduce((total, track) => total + track.duration_sec, 0), genre: "Diagnostics" } };
+    return {
+      opcode: "library_album",
+      request_id: null,
+      cartridge: { status: "ready", mounted: true, checksum: cartridgeChecksum, metadata_version: 1, track_count: this.state.tracks.length },
+      album: {
+        name: "Mock Cartridge",
+        artist: "Jukeboy Test Rig",
+        description: "Deterministic firmware-style state for browser and Tauri sync tests.",
+        year: 2026,
+        duration_sec: this.state.tracks.reduce((total, track) => total + track.duration_sec, 0),
+        genre: "Diagnostics",
+        artwork_data_url: MOCK_ARTWORK_DATA_URL,
+      },
+    };
   }
 
   private trackPage(request: CommandRequest) {
@@ -361,6 +512,131 @@ class BrowserMockCompanionTransport implements CompanionTransport {
     ];
     const albums = allAlbums.slice(offset, offset + count);
     return { opcode: "history_album_page", request_id: null, offset, album_count: allAlbums.length, returned_count: albums.length, albums };
+  }
+
+  private historyTracks(request: CommandRequest) {
+    const { offset, count } = pageRequest(request, 8);
+    const tracks = this.state.tracks.slice(offset, offset + count).map((track, index) => ({
+      track_index: offset + index,
+      title: track.title,
+      artist: track.artist,
+      duration_sec: track.duration_sec,
+      file_num: track.file_num,
+      played_at: 1777744000 + offset + index,
+    }));
+    return {
+      opcode: "history_track_page",
+      request_id: null,
+      offset,
+      track_count: this.state.tracks.length,
+      returned_count: tracks.length,
+      tracks,
+    };
+  }
+
+  private wifiSlots() {
+    return {
+      opcode: "wifi_list_slots",
+      request_id: null,
+      slots: [
+        { slot: 0, ssid: "Jukeboy Lab", configured: true, preferred: true, active: this.state.wifi_active_slot === 0 },
+        { slot: 1, ssid: "Stage Router", configured: true, preferred: false, active: this.state.wifi_active_slot === 1 },
+        { slot: 2, ssid: "Open Bench", configured: true, preferred: false, active: this.state.wifi_active_slot === 2 },
+      ],
+    };
+  }
+
+  private bluetoothScanResults(request: CommandRequest) {
+    const { offset, count } = pageRequest(request, 8);
+    const devices = [
+      { address: "BT:MO:CK:00:01", name: "Studio Speaker", rssi: -41, bonded: true },
+      { address: "BT:MO:CK:00:02", name: "Kitchen Speaker", rssi: -57, bonded: false },
+    ].slice(offset, offset + count);
+    return {
+      opcode: "bt_scan_results",
+      request_id: null,
+      offset,
+      total_count: 2,
+      returned_count: devices.length,
+      devices,
+    };
+  }
+
+  private bondedBluetoothList() {
+    return {
+      opcode: "bt_bonded_list",
+      request_id: null,
+      bonded_count: this.state.bluetooth_bonded_count,
+      devices: [
+        { address: "BT:MO:CK:00:01", name: "Studio Speaker" },
+        { address: "BT:MO:CK:00:03", name: "Office Speaker" },
+      ],
+    };
+  }
+
+  private hidStatus() {
+    return {
+      opcode: "hid_status",
+      request_id: null,
+      button_bitmap: 0,
+      adc_raw: 512,
+      led: {
+        r: 32,
+        g: 24,
+        b: 12,
+        brightness: 40,
+        off: false,
+      },
+    };
+  }
+
+  private scriptStatus(opcode = "script_status") {
+    return {
+      opcode,
+      request_id: null,
+      state: this.state.script_state,
+      active_script: this.state.active_script,
+      message: this.state.script_message,
+    };
+  }
+
+  private scriptList(request: CommandRequest) {
+    const filterName = String(requestRecord(request).name ?? "").trim().toLowerCase();
+    const scripts = this.state.scripts
+      .filter((script) => !filterName || script.name.toLowerCase().includes(filterName))
+      .map(({ name, kind, last_run }) => ({ name, kind, last_run }));
+
+    return {
+      opcode: "script_list",
+      request_id: null,
+      scripts,
+    };
+  }
+
+  private scriptLog(request: CommandRequest) {
+    const name = String(requestRecord(request).name ?? this.state.active_script ?? this.state.scripts[0]?.name ?? "");
+    const script = this.state.scripts.find((entry) => entry.name === name) ?? this.state.scripts[0];
+    const output = script?.log ?? "";
+    return {
+      opcode: "script_log",
+      request_id: null,
+      output,
+      offset: 0,
+      returned_count: output.length,
+    };
+  }
+
+  private runScript(request: CommandRequest): void {
+    const name = String(requestRecord(request).name ?? this.state.scripts[0]?.name ?? "Device script");
+    const script = this.state.scripts.find((entry) => entry.name === name) ?? this.state.scripts[0];
+    this.state.script_state = "idle";
+    this.state.active_script = null;
+    this.state.script_message = `${name} completed successfully.`;
+    if (script) {
+      script.last_run = "Completed just now";
+      script.log = `[${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}] ${name}\nCompleted successfully.`;
+    }
+    this.touch("scripts", "script_run");
   }
 
   private touch(event: string, opcode = "snapshot"): CompanionEventPayload {

@@ -493,6 +493,248 @@ export const commandSections: CommandSection[] = [
       },
     ],
   },
+  {
+    title: "Advanced Diagnostics And Maintenance",
+    description: "Script runners, raw device diagnostics, and maintenance commands kept out of the primary UI.",
+    commands: [
+      {
+        name: "companion_output_status",
+        title: "Output Status",
+        description: "Read the currently selected audio output target.",
+        requestMode: "none",
+        fields: [],
+        buildRequest: () => null,
+      },
+      {
+        name: "companion_output_select",
+        title: "Output Select",
+        description: "Force the device to switch audio outputs.",
+        requestMode: "required",
+        fields: [
+          {
+            key: "output_target",
+            label: "Output target",
+            type: "select",
+            defaultValue: "bluetooth",
+            options: [
+              { label: "Bluetooth", value: "bluetooth" },
+              { label: "I2S", value: "i2s" },
+            ],
+          },
+        ],
+        buildRequest: (values) =>
+          requiredRequest({
+            output_target: textValue(values.output_target),
+          }),
+      },
+      {
+        name: "companion_wifi_list_slots",
+        title: "Wi-Fi Slots",
+        description: "Inspect saved Wi-Fi slots on the device.",
+        requestMode: "none",
+        fields: [],
+        buildRequest: () => null,
+      },
+      {
+        name: "companion_wifi_save_slot",
+        title: "Wi-Fi Save Slot",
+        description: "Write credentials into a stored Wi-Fi slot.",
+        requestMode: "required",
+        fields: [
+          { key: "slot", label: "Slot", type: "number", defaultValue: "0", min: 0, step: 1 },
+          { key: "ssid", label: "SSID", type: "text", placeholder: "Network name" },
+          { key: "password", label: "Password", type: "password" },
+          { key: "preferred", label: "Preferred", type: "checkbox", defaultValue: true },
+        ],
+        buildRequest: (values) =>
+          requiredRequest({
+            slot: numberValue(values.slot),
+            ssid: textValue(values.ssid),
+            password: textValue(values.password),
+            preferred: checkboxValue(values.preferred),
+          }),
+      },
+      {
+        name: "companion_wifi_reconnect",
+        title: "Wi-Fi Reconnect",
+        description: "Ask the device to retry its stored Wi-Fi connection.",
+        requestMode: "none",
+        fields: [],
+        buildRequest: () => null,
+      },
+      {
+        name: "companion_lastfm_request_token",
+        title: "Last.fm Request Token",
+        description: "Fetch a fresh Last.fm request token from the device.",
+        requestMode: "none",
+        fields: [],
+        buildRequest: () => null,
+      },
+      {
+        name: "companion_history_tracks",
+        title: "History Tracks",
+        description: "Inspect raw playback history track pages.",
+        requestMode: "optional",
+        fields: [
+          { key: "checksum", label: "Checksum", type: "number", min: 0, step: 1 },
+          { key: "offset", label: "Offset", type: "number", defaultValue: "0", min: 0, step: 1 },
+          { key: "count", label: "Count", type: "number", defaultValue: "8", min: 1, step: 1 },
+        ],
+        buildRequest: (values) =>
+          optionalRequest({
+            checksum: numberValue(values.checksum),
+            offset: numberValue(values.offset),
+            count: numberValue(values.count),
+          }),
+      },
+      {
+        name: "companion_history_clear",
+        title: "History Clear",
+        description: "Clear stored playback history on the device.",
+        requestMode: "none",
+        fields: [],
+        buildRequest: () => null,
+      },
+      {
+        name: "companion_bt_scan_start",
+        title: "Bluetooth Scan Start",
+        description: "Start a low-level Bluetooth device scan.",
+        requestMode: "none",
+        fields: [],
+        buildRequest: () => null,
+      },
+      {
+        name: "companion_bt_scan_results",
+        title: "Bluetooth Scan Results",
+        description: "Read raw Bluetooth scan results.",
+        requestMode: "optional",
+        fields: [
+          { key: "offset", label: "Offset", type: "number", defaultValue: "0", min: 0, step: 1 },
+          { key: "count", label: "Count", type: "number", defaultValue: "8", min: 1, step: 1 },
+        ],
+        buildRequest: (values) =>
+          optionalRequest({
+            offset: numberValue(values.offset),
+            count: numberValue(values.count),
+          }),
+      },
+      {
+        name: "companion_bt_bonded_list",
+        title: "Bluetooth Bonded List",
+        description: "Inspect bonded Bluetooth devices.",
+        requestMode: "none",
+        fields: [],
+        buildRequest: () => null,
+      },
+      {
+        name: "companion_bt_unbond",
+        title: "Bluetooth Unbond",
+        description: "Remove a bonded Bluetooth device by address.",
+        requestMode: "required",
+        fields: [{ key: "address", label: "Device address", type: "text", placeholder: "AA:BB:CC:DD:EE:FF" }],
+        buildRequest: (values) =>
+          requiredRequest({
+            address: textValue(values.address),
+          }),
+      },
+      {
+        name: "companion_hid_status",
+        title: "HID Status",
+        description: "Inspect button, ADC, and LED diagnostic state.",
+        requestMode: "none",
+        fields: [],
+        buildRequest: () => null,
+      },
+      {
+        name: "companion_hid_led_set",
+        title: "HID LED Set",
+        description: "Write raw LED color and brightness values.",
+        requestMode: "optional",
+        fields: [
+          { key: "r", label: "Red", type: "number", min: 0, step: 1 },
+          { key: "g", label: "Green", type: "number", min: 0, step: 1 },
+          { key: "b", label: "Blue", type: "number", min: 0, step: 1 },
+          { key: "brightness", label: "Brightness", type: "number", min: 0, step: 1 },
+          { key: "off", label: "Turn off", type: "checkbox", defaultValue: false },
+        ],
+        buildRequest: (values) =>
+          optionalRequest({
+            r: numberValue(values.r),
+            g: numberValue(values.g),
+            b: numberValue(values.b),
+            brightness: numberValue(values.brightness),
+            off: checkboxValue(values.off),
+          }),
+      },
+      {
+        name: "companion_script_status",
+        title: "Script Status",
+        description: "Read the raw script runner state.",
+        requestMode: "none",
+        fields: [],
+        buildRequest: () => null,
+      },
+      {
+        name: "companion_script_list",
+        title: "Script List",
+        description: "Inspect the device-reported script catalog.",
+        requestMode: "optional",
+        fields: [{ key: "name", label: "Name filter", type: "text", placeholder: "Optional script name filter" }],
+        buildRequest: (values) =>
+          optionalRequest({
+            name: textValue(values.name),
+          }),
+      },
+      {
+        name: "companion_script_log",
+        title: "Script Log",
+        description: "Fetch raw script output from the device.",
+        requestMode: "optional",
+        fields: [
+          { key: "name", label: "Script name", type: "text", placeholder: "Optional script name" },
+          { key: "offset", label: "Offset", type: "number", defaultValue: "0", min: 0, step: 1 },
+          { key: "count", label: "Count", type: "number", defaultValue: "2048", min: 1, step: 1 },
+        ],
+        buildRequest: (values) =>
+          optionalRequest({
+            name: textValue(values.name),
+            offset: numberValue(values.offset),
+            count: numberValue(values.count),
+          }),
+      },
+      {
+        name: "companion_script_run",
+        title: "Script Run",
+        description: "Run a device script directly by name.",
+        requestMode: "required",
+        fields: [
+          { key: "name", label: "Script name", type: "text", placeholder: "Refresh Artwork Cache" },
+          { key: "args", label: "Arguments", type: "text", placeholder: "Optional raw args" },
+        ],
+        buildRequest: (values) =>
+          requiredRequest({
+            name: textValue(values.name),
+            args: textValue(values.args),
+          }),
+      },
+      {
+        name: "companion_system_reboot",
+        title: "System Reboot",
+        description: "Request a normal device reboot.",
+        requestMode: "none",
+        fields: [],
+        buildRequest: () => null,
+      },
+      {
+        name: "companion_system_reboot_download",
+        title: "System Reboot To Download",
+        description: "Request reboot into download mode.",
+        requestMode: "none",
+        fields: [],
+        buildRequest: () => null,
+      },
+    ],
+  },
 ];
 
 const allCommands = commandSections.flatMap((section) => section.commands);
